@@ -4,7 +4,11 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_community.document_loaders import (
+    DirectoryLoader,
+    PyPDFLoader,
+    TextLoader,
+)
 from langchain_community.vectorstores import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -34,15 +38,25 @@ def ingest(data_dir: Path, chroma_dir: Path, chunk_size: int, chunk_overlap: int
         )
         return 1
 
-    loader = DirectoryLoader(
-        str(data_dir),
-        glob="**/*.pdf",
-        loader_cls=PyPDFLoader,
-        show_progress=True,
-    )
-    docs = loader.load()
+    docs: list = []
+    for glob_pat, loader_cls, loader_kwargs in (
+        ("**/*.pdf", PyPDFLoader, {}),
+        ("**/*.txt", TextLoader, {"encoding": "utf-8"}),
+        ("**/*.md", TextLoader, {"encoding": "utf-8"}),
+    ):
+        loader = DirectoryLoader(
+            str(data_dir),
+            glob=glob_pat,
+            loader_cls=loader_cls,
+            loader_kwargs=loader_kwargs,
+            show_progress=True,
+        )
+        docs.extend(loader.load())
     if not docs:
-        print(f"No PDF files found under {data_dir}", file=sys.stderr)
+        print(
+            f"No supported files (.pdf, .txt, .md) found under {data_dir}",
+            file=sys.stderr,
+        )
         return 1
 
     splitter = RecursiveCharacterTextSplitter(
@@ -71,12 +85,14 @@ def ingest(data_dir: Path, chroma_dir: Path, chunk_size: int, chunk_overlap: int
 
 def main() -> None:
     root = _project_root()
-    parser = argparse.ArgumentParser(description="Embed PDFs into ChromaDB.")
+    parser = argparse.ArgumentParser(
+        description="Embed .pdf, .txt, and .md files into ChromaDB.",
+    )
     parser.add_argument(
         "--data-dir",
         type=Path,
         default=root / "data",
-        help="Directory containing PDF files",
+        help="Directory containing .pdf, .txt, and/or .md files",
     )
     parser.add_argument(
         "--chroma-dir",

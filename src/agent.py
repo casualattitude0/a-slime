@@ -61,11 +61,45 @@ def _make_llm() -> BaseChatModel:
     return ChatGoogleGenerativeAI(model=model, temperature=0, google_api_key=api_key)
 
 
+class _PrefetchExecutor:
+    """委派 AgentExecutor：每次 invoke 先預檢索並注入嵌入片段（Pydantic AgentExecutor 不可覆寫 invoke）。"""
+
+    __slots__ = ("_executor", "_retriever")
+
+    def __init__(self, executor: AgentExecutor, retriever: Any) -> None:
+        object.__setattr__(self, "_executor", executor)
+        object.__setattr__(self, "_retriever", retriever)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        payload: dict[str, Any]
+        if args and isinstance(args[0], dict):
+            payload = {**args[0], **kwargs}
+        else:
+            payload = dict(kwargs)
+        base_input = payload.get("input")
+        retriever = object.__getattribute__(self, "_retriever")
+        if isinstance(base_input, str) and base_input.strip() and retriever is not None:
+            q = base_input.strip()
+            docs = retriever.invoke(q)
+            if docs:
+                ctx = "\n\n".join(d.page_content for d in docs)
+                payload["input"] = (
+                    f"{base_input}\n\n---\n"
+                    "[Embedded local documents — answer from this text when it applies; "
+                    "say if something is not covered here.]\n"
+                    f"{ctx}"
+                )
+        return self._executor.invoke(payload)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_executor"), name)
+
+
 def build_executor(
     chroma_dir: Path | None = None,
     *,
     retriever_k: int = 4,
-) -> AgentExecutor:
+) -> AgentExecutor | _PrefetchExecutor:
     root = _project_root()
     load_dotenv(root / ".env")
     chroma_path = (chroma_dir or (root / "chroma_db")).resolve()
@@ -114,8 +148,10 @@ def build_executor(
         [
             (
                 "system",
-                "You are a helpful assistant. Use the document_search tool when the user "
-                "asks about information that may be in the local document store.",
+                "You are a helpful assistant. The user's message may include a block "
+                "marked with [Embedded local documents — ...] with passages from the local "
+                "vector store; ground your answer in that text when it applies. "
+                "You may call document_search if you need more passages.",
             ),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
@@ -125,10 +161,11 @@ def build_executor(
     tools = [retriever_tool]
     agent = create_tool_calling_agent(llm, tools, prompt)
     verbose = os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
-    return AgentExecutor(
+    executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=verbose,
         handle_parsing_errors=True,
         max_iterations=10,
     )
+    return _PrefetchExecutor(executor, retriever)
