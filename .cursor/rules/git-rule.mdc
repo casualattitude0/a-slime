@@ -1,0 +1,210 @@
+---
+description: Git-related tasks
+globs:
+alwaysApply: false
+---
+
+- **Feature Branch**
+  - **Naming Format**: `feature/<name>`
+  - **Base Branch**: `develop`
+  - **Purpose**: Used for developing new features; merge back into `develop` when complete.
+- **Bugfix Branch**
+  - **Naming Format**: `bugfix/<name>`
+  - **Base Branch**: `develop`
+  - **Purpose**: Used to fix non-urgent bugs or defects; merge back into `develop` when complete.
+- **Hotfix Branch**
+  - **Naming Format**: `hotfix/<name>`
+  - **Base Branch**: `main`
+  - **Purpose**: Used for urgent fixes in production; after completion, merge into both `main` and `develop`.
+- **Release Branch**
+  - **Naming Format**: `release/<version>`
+  - **Base Branch**: `develop`
+  - **Purpose**: Used to prepare a new release (final testing and minor fixes); merge into both `main` and `develop` when ready.
+- **Documentation Branch**
+  - **Naming Format**: `docs/<name>`
+  - **Base Branch**: `develop` or `main`
+  - **Purpose**: Dedicated to writing or updating documentation; merge into `develop` or `main` as appropriate.
+- **Design or Art Branch**
+  - **Naming Format**: `design/<name>` or `art/<name>`
+  - **Base Branch**: `develop`
+  - **Purpose**: Used for design-related work (e.g., UI/UX sketches, prototypes, assets) to facilitate collaboration between design and development.
+
+# **Git Workflow Standard Document: Git Flow**
+
+This document describes the **Git Flow** branching strategy and commit message conventions to ensure consistency, collaboration, and well-structured development.
+
+---
+
+## **Branching Strategy**
+
+The following branches are used to manage the different phases of development:
+
+### **Main Branches**
+
+- **`master`**
+  - Contains production-ready code.
+  - Only accepts merges from `release/` or `hotfix/` branches.
+- **`develop`**
+  - Holds the latest development changes, which will eventually be released.
+  - All feature, bugfix, and release branches are merged here.
+
+---
+
+### **Supporting Branches**
+
+| **Branch Type**   | **Naming Convention** | **Base Branch**     |
+| ----------------- | --------------------- | ------------------- |
+| **Feature**       | `feature/<name>`      | `develop`           |
+| **Bugfix**        | `bugfix/<name>`       | `develop`           |
+| **Hotfix**        | `hotfix/<name>`       | `main`              |
+| **Release**       | `release/<version>`   | `develop`           |
+| **Documentation** | `docs/<name>`         | `develop` or `main` |
+| **Design**        | `design/<name>`       | `develop`           |
+
+### **Branch Purposes:**
+
+- **`feature/`**: Develop new features or enhancements.
+  Example: `feature/user-auth`
+- **`bugfix/`**: Fix non-critical bugs.
+  Example: `bugfix/issue-42-css-alignment`
+- **`hotfix/`**: Apply urgent fixes to critical production issues.
+  Example: `hotfix/payment-failure-urgent`
+- **`release/`**: Prepare a new release with final touch-ups.
+  Example: `release/1.2.0`
+- **`docs/`**: Manage changes to documentation.
+  Example: `docs/api-usage-guide`
+- **`design/`**: Test some underdevelopment features.
+  Example: `design/new-idea`
+
+---
+
+## 2. Commit Message Guidelines
+
+Follow **conventional commit messages** to maintain a consistent commit history. Each commit message must begin with a **type prefix**, indicating the nature of the change.
+
+### Commit Types
+
+| **Type**    | **Usage**                                                                               |
+| ----------- | --------------------------------------------------------------------------------------- |
+| `feat:`     | A new feature implementation.                                                           |
+| `fix:`      | A bug fix.                                                                              |
+| `ci:`       | Changes related to Continuous Integration.                                              |
+| `style:`    | Changes related to code style (formatting, indentation, etc.) that do not affect logic. |
+| `refactor:` | Code refactoring that neither adds features nor fixes bugs.                             |
+
+### Example Commit Messages
+
+- `feat: add user authentication`
+- `fix: resolve login page layout issue on mobile`
+- `ci: update GitHub Actions to Node.js 18`
+- `style: fix indentation in UserService.js`
+- `refactor: optimize database query for fetching users`
+
+---
+
+## 3. Workflow Example Using Git Flow
+
+```bash
+# 1. Create a new feature branch
+git checkout -b feature/add-authentication
+
+# 2. Work on the feature and commit changes
+git add .
+git commit -m "feat: add user authentication with JWT support"
+```
+
+---
+
+## 4. Release Workflow
+
+1. **Create a release branch**:
+
+   ```bash
+   git checkout main
+   git checkout -b release/v1.0.0
+   ```
+
+2. **Test, review, and finalize** the release. Apply bug fixes if needed.
+
+3. **Merge into `main`** and **tag the release**:
+
+   ```bash
+   git checkout main
+   git merge release/v1.0.0
+   git tag v1.0.0
+   ```
+
+4. **Merge back into `develop`** to keep it up-to-date:
+
+   ```bash
+   git checkout develop
+   git merge release/v1.0.0
+   ```
+
+5. **Delete the release branch**:
+
+   ```bash
+   git branch -d release/v1.0.0
+   ```
+
+---
+
+## 5. Hotfix Workflow
+
+1. **Create a hotfix branch from `main`**:
+
+   ```bash
+   git checkout -b hotfix/critical-bug-fix
+   ```
+
+2. **Apply the fix and commit**:
+
+   ```bash
+   git add .
+   git commit -m "hotfix: resolve critical server crash issue"
+   ```
+
+3. **Merge the hotfix into `main` and `develop`**:
+
+   ```bash
+   git checkout main
+   git merge hotfix/critical-bug-fix
+   git checkout develop
+   git merge hotfix/critical-bug-fix
+   ```
+
+4. **Delete the hotfix branch**:
+
+   ```bash
+   git branch -d hotfix/critical-bug-fix
+   ```
+
+---
+
+## 6. Documentation Branch Workflow
+
+1. **Create a `docs` branch** for documentation changes:
+
+   ```bash
+   git checkout -b docs/update-readme
+   ```
+
+2. **Commit the changes**:
+
+   ```bash
+   git add README.md
+   git commit -m "docs: update project README with usage instructions"
+   ```
+
+3. **Merge into `develop`**:
+
+   ```bash
+   git checkout develop
+   git merge docs/update-readme
+   ```
+
+4. **Delete the `docs` branch**:
+
+   ```bash
+   git branch -d docs/update-readme
+   ```
