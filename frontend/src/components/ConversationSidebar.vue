@@ -123,7 +123,7 @@ async function handleNewChat() {
               class="rename-input"
               @keydown.enter="commitRename(chat.chat_id)"
               @keydown.esc="cancelRename"
-              @blur="cancelRename"
+              @blur="commitRename(chat.chat_id)"
               @click.stop
             />
             <button class="icon-btn icon-btn--ok" @click.stop="commitRename(chat.chat_id)" title="Save">

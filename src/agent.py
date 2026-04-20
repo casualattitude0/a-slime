@@ -31,6 +31,15 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _has_supported_data_files(data_dir: Path) -> bool:
+    if not data_dir.exists():
+        return False
+    for pat in ("*.pdf", "*.txt", "*.md"):
+        if any(data_dir.rglob(pat)):
+            return True
+    return False
+
+
 _status_tls = threading.local()
 
 
@@ -398,6 +407,8 @@ def build_executor(
     memory_collection: str | None = None,
     rag_collection: str = _DEFAULT_RAG_COLLECTION,
 ) -> AgentExecutor | _PrefetchExecutor:
+    from src.ingest import ingest as run_ingest
+
     root = _project_root()
     load_dotenv(root / ".env")
     chroma_path = (chroma_dir or (root / "chroma_db")).resolve()
@@ -418,6 +429,24 @@ def build_executor(
         embedding_function=embeddings,
         collection_name=rag_collection,
     )
+    try:
+        rag_count = int(vectorstore._collection.count())
+    except Exception:
+        rag_count = 0
+    if rag_count == 0:
+        data_dir = root / "data"
+        if _has_supported_data_files(data_dir):
+            run_ingest(
+                data_dir=data_dir.resolve(),
+                chroma_dir=chroma_path.resolve(),
+                chunk_size=1000,
+                chunk_overlap=200,
+            )
+            vectorstore = Chroma(
+                persist_directory=str(chroma_path),
+                embedding_function=embeddings,
+                collection_name=rag_collection,
+            )
     retriever = vectorstore.as_retriever(search_kwargs={"k": retriever_k})
 
     def _run_document_search(query: str) -> str:

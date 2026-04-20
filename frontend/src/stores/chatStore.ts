@@ -526,18 +526,10 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function createNewChat(): Promise<string | null> {
-    try {
-      const res = await fetch('/api/chats', { method: 'POST' })
-      if (!res.ok) return null
-      const entry: ChatEntry = await res.json()
-      await fetchChats()
-      messages.value = []
-      setSessionId(entry.chat_id)
-      _setActiveChatId(entry.chat_id)
-      return entry.chat_id
-    } catch {
-      return null
-    }
+    messages.value = []
+    setSessionId(null)
+    _setActiveChatId(null)
+    return null
   }
 
   async function switchToChat(chatId: string): Promise<boolean> {
