@@ -52,6 +52,41 @@ if [[ -z "${GOOGLE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
   warn "GOOGLE_API_KEY / GEMINI_API_KEY not set — web server will refuse to start."
 fi
 
+# ── Ingest: build ChromaDB from data if needed ────────────────────────────────
+DATA_DIR="${DATA_DIR:-$ROOT/data}"
+CHROMA_DIR="${CHROMA_DIR:-$ROOT/chroma_db}"
+INGEST_STAMP="$CHROMA_DIR/.ingest.stamp"
+
+if [[ -d "$DATA_DIR" ]]; then
+  NEEDS_INGEST=false
+  if [[ ! -f "$INGEST_STAMP" ]]; then
+    NEEDS_INGEST=true
+  else
+    while IFS= read -r -d '' f; do
+      if [[ "$f" -nt "$INGEST_STAMP" ]]; then
+        NEEDS_INGEST=true
+        break
+      fi
+    done < <(find "$DATA_DIR" -type f \( -name "*.pdf" -o -name "*.txt" -o -name "*.md" \) -print0 2>/dev/null)
+  fi
+
+  if [[ "$NEEDS_INGEST" == true ]]; then
+    if [[ -z "${GOOGLE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
+      warn "Skipping ingest because GOOGLE_API_KEY / GEMINI_API_KEY is not set."
+    else
+      info "Building ChromaDB via src/ingest.py …"
+      "$PYTHON" "$ROOT/src/ingest.py" --data-dir "$DATA_DIR" --chroma-dir "$CHROMA_DIR"
+      mkdir -p "$CHROMA_DIR"
+      touch "$INGEST_STAMP"
+      ok "Ingest complete → $CHROMA_DIR"
+    fi
+  else
+    ok "Ingest is up to date"
+  fi
+else
+  warn "Data directory not found: $DATA_DIR (skipping ingest)."
+fi
+
 # ── Node / npm: install and build frontend if needed ─────────────────────────
 FRONTEND="$ROOT/frontend"
 DIST="$FRONTEND/dist"
