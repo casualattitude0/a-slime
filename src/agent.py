@@ -311,13 +311,25 @@ def build_executor(
                 "any relevant gathered context explicitly.\n"
                 "- document_search: search local documents previously ingested "
                 "into the vector store; use only when relevant.\n\n"
-                "Workflow: (1) check memory, (2) gather facts via web tools or "
-                "documents, (3) reason yourself or delegate to "
-                "ask_reasoning_model for hard problems, (4) save important "
-                "findings to memory, (5) answer concisely with citations to "
-                "sources you used. Do not invent citations. If embedded local "
-                "documents appear in the input ([Embedded local documents — "
-                "...]) treat them as optional reference only.",
+                "Workflow after user sends a question:\n"
+                "If the task is very simple (e.g. greetings, trivial factual "
+                "lookups, direct clarifications), reply directly without "
+                "invoking tools. Otherwise, first break down the possibilities "
+                "and consider whether an LLM sub-agent is needed.\n"
+                "1. 區分任務 (Task Classification): decompose the user request "
+                "into ordered subtasks and decide which sub-agent/tool handles "
+                "each (search_memory, web_search, web_fetch, document_search, "
+                "ask_reasoning_model).\n"
+                "2. 任務執行 (Task Execution): dispatch each subtask to the "
+                "chosen sub-agent/tool in order; delegate complex reasoning or "
+                "synthesis to ask_reasoning_model with the relevant gathered "
+                "context.\n"
+                "3. 回覆 (Reply): aggregate results and answer the user "
+                "concisely with citations to the sources you actually used; "
+                "save durable findings via save_to_memory when useful.\n"
+                "Do not invent citations. If embedded local documents appear "
+                "in the input ([Embedded local documents — ...]) treat them "
+                "as optional reference only.",
             ),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
@@ -451,22 +463,44 @@ def _extract_embedded_block_list(text: str) -> tuple[str, str] | None:
     idx = text.find("[{")
     if idx < 0:
         return None
-    # Prefer the longest suffix starting at idx that parses as a list (shortest-first would
-    # stop at the first `]` and drop later blocks in multi-part lists).
-    for end in range(len(text), idx + 1, -1):
-        chunk = text[idx:end]
-        if not chunk.endswith("]"):
+    
+    depth = 0
+    in_string = False
+    escape = False
+    quote_char = ''
+    
+    for i in range(idx, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
             continue
-        try:
-            val = ast.literal_eval(chunk)
-        except (ValueError, SyntaxError):
+        if c == '\\':
+            escape = True
             continue
-        if isinstance(val, list) and (
-            not val or isinstance(val[0], dict) or isinstance(val[0], str)
-        ):
-            plain = _blocks_to_plain_text(val).strip()
-            prefix = text[:idx].strip()
-            return prefix, plain
+        if in_string:
+            if c == quote_char:
+                in_string = False
+        else:
+            if c in ('"', "'"):
+                in_string = True
+                quote_char = c
+            elif c == '[':
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0:
+                    chunk = text[idx:i+1]
+                    try:
+                        val = ast.literal_eval(chunk)
+                        if isinstance(val, list) and (
+                            not val or isinstance(val[0], dict) or isinstance(val[0], str)
+                        ):
+                            plain = _blocks_to_plain_text(val).strip()
+                            prefix = text[:idx].strip()
+                            return prefix, plain
+                    except (ValueError, SyntaxError):
+                        pass
+                    break
     return None
 
 
