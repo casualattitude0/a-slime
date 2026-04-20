@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Trash2, Loader2, Database, Zap } from 'lucide-vue-next'
+import { Trash2, Loader2, Database } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import MemoryPanel from './MemoryPanel.vue'
+import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 
 const chatStore = useChatStore()
 const { messages, status, isLoading, activeVersionId, versions, pendingLLMError } = storeToRefs(chatStore)
@@ -83,40 +84,49 @@ const activeVersionName = () => {
       </div>
     </header>
 
-    <!-- Body: chat canvas + optional panel -->
+    <!-- Body: chat canvas -->
     <div class="body-row">
       <!-- Message Canvas -->
-      <main ref="logRef" class="chat-canvas">
-        <!-- Empty state -->
-        <div v-if="messages.length === 0" class="empty-state">
-          <div class="empty-icon">
-            <Zap :size="26" />
+      <main class="chat-canvas">
+        <!-- Hero banner — always visible -->
+        <div class="hero-banner">
+          <div class="hero-activity">
+            <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
+            <span class="hero-activity-text">{{ status || 'Idle · Waiting for input' }}</span>
           </div>
-          <p class="empty-title">Ready</p>
-          <p class="empty-sub">Send a message to start</p>
+          <div class="hero-avatar-wrap">
+            <img :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
+            <div class="hero-avatar-ring"></div>
+          </div>
+          <p class="hero-name">LOCAL AGENT</p>
+          <p v-if="messages.length === 0" class="hero-sub">Send a message to begin</p>
         </div>
 
-        <div v-else class="messages-inner">
-        <ChatMessage
-          v-for="(msg, i) in messages"
-          :key="i"
-          :role="msg.role"
-          :text="msg.text"
-          :llm-error="msg.llmError"
-          :show-actions="pendingLLMError?.messageIndex === i"
-          @fix-issue="chatStore.fixIssue()"
-          @answer-immediately="chatStore.answerImmediately()"
-        />
+        <!-- Scrollable messages area -->
+        <div ref="logRef" class="messages-scroll">
+          <div v-if="messages.length > 0" class="messages-inner">
+            <ChatMessage
+              v-for="(msg, i) in messages"
+              :key="i"
+              :role="msg.role"
+              :text="msg.text"
+              :llm-error="msg.llmError"
+              :show-actions="pendingLLMError?.messageIndex === i"
+              @fix-issue="chatStore.fixIssue()"
+              @answer-immediately="chatStore.answerImmediately()"
+            />
+          </div>
         </div>
       </main>
 
-      <!-- Memory Panel -->
-      <Transition name="panel">
-        <div v-if="showPanel" class="panel-wrapper">
-          <MemoryPanel />
-        </div>
-      </Transition>
     </div>
+
+    <!-- Floating Memory Panel -->
+    <Transition name="panel">
+      <div v-if="showPanel" class="panel-floating">
+        <MemoryPanel />
+      </div>
+    </Transition>
 
     <!-- Composer Footer -->
     <footer class="composer-footer">
@@ -139,6 +149,7 @@ const activeVersionName = () => {
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
+  position: relative;
 }
 
 /* ── Command bar ─────────────────────────────────────── */
@@ -265,8 +276,17 @@ const activeVersionName = () => {
 /* ── Chat canvas ─────────────────────────────────────── */
 .chat-canvas {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Messages scroll ─────────────────────────────────── */
+.messages-scroll {
+  flex: 1;
   overflow-y: auto;
-  padding: 24px 20px 12px;
+  padding: 16px 20px 12px;
   scroll-behavior: smooth;
 }
 
@@ -275,51 +295,105 @@ const activeVersionName = () => {
   margin: 0 auto;
 }
 
-/* Empty state */
-.empty-state {
+/* ── Hero banner (always visible) ───────────────────── */
+.hero-banner {
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 10px;
-  color: var(--text-dim);
+  padding: 28px 20px 20px;
+  gap: 0;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+  background: rgba(17, 19, 24, 0.5);
 }
 
-.empty-icon {
-  width: 54px;
-  height: 54px;
-  border-radius: 14px;
-  border: 1px solid rgba(0, 229, 255, 0.18);
-  background: rgba(0, 229, 255, 0.04);
+.hero-activity {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 7px;
+  margin-bottom: 14px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.07em;
   color: var(--accent);
-  margin-bottom: 4px;
+  opacity: 0.75;
 }
 
-.empty-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  margin: 0;
+.hero-activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(0, 229, 255, 0.35);
+  flex-shrink: 0;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 
-.empty-sub {
+.hero-activity-dot.dot-active {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+.hero-avatar-wrap {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  margin-bottom: 14px;
+}
+
+.hero-avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 22px;
+  object-fit: cover;
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  box-shadow: 0 0 24px rgba(0, 229, 255, 0.1), 0 4px 20px rgba(0, 0, 0, 0.45);
+  position: relative;
+  z-index: 1;
+}
+
+.hero-avatar-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 28px;
+  border: 1px solid rgba(0, 229, 255, 0.1);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.hero-name {
   font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  margin: 0 0 4px;
+}
+
+.hero-sub {
+  font-size: 11px;
   color: var(--text-dim);
   margin: 0;
+  letter-spacing: 0.02em;
 }
 
-/* ── Memory panel ────────────────────────────────────── */
-.panel-wrapper {
-  width: 288px;
-  flex-shrink: 0;
-  border-left: 1px solid var(--border);
+/* ── Floating memory panel ───────────────────────────── */
+.panel-floating {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  width: min(360px, calc(100vw - 32px));
+  height: min(70vh, 640px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: rgba(12, 14, 18, 0.95);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.42);
+  z-index: 35;
 }
 
 /* ── Composer footer ─────────────────────────────────── */

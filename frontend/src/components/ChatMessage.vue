@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, AlertTriangle, Wrench, Zap } from 'lucide-vue-next'
+import { User, AlertTriangle, Wrench, Zap, Brain } from 'lucide-vue-next'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 import type { LLMErrorPayload } from '../stores/chatStore'
 
 const props = defineProps<{
-  role: 'user' | 'bot' | 'err'
+  role: 'user' | 'bot' | 'err' | 'thought'
   text: string
   llmError?: LLMErrorPayload
   showActions?: boolean
@@ -26,6 +26,13 @@ const renderedText = computed(() => {
   if (props.role === 'bot') return md.render(props.text)
   return props.text
 })
+
+const roleLabel = computed(() => {
+  if (props.role === 'user') return 'You'
+  if (props.role === 'bot') return 'Agent'
+  if (props.role === 'thought') return 'Thinking'
+  return 'Error'
+})
 </script>
 
 <template>
@@ -35,19 +42,26 @@ const renderedText = computed(() => {
       'msg-row--user': role === 'user',
       'msg-row--bot': role === 'bot',
       'msg-row--err': role === 'err',
+      'msg-row--thought': role === 'thought',
     }"
   >
-    <!-- Avatar (bot / err left side) -->
-    <div v-if="role !== 'user'" class="msg-avatar" :class="role === 'err' ? 'msg-avatar--err' : ''">
+    <!-- Avatar (bot / err / thought — left side) -->
+    <div
+      v-if="role !== 'user'"
+      class="msg-avatar"
+      :class="{
+        'msg-avatar--err': role === 'err',
+        'msg-avatar--thought': role === 'thought',
+      }"
+    >
       <img v-if="role === 'bot'" :src="aiSlimeAvatar" alt="AI" class="avatar-img" />
+      <Brain v-else-if="role === 'thought'" :size="13" />
       <AlertTriangle v-else :size="14" />
     </div>
 
     <!-- Bubble -->
     <div class="msg-bubble">
-      <div class="msg-label">
-        {{ role === 'user' ? 'You' : role === 'bot' ? 'Agent' : 'Error' }}
-      </div>
+      <div class="msg-label">{{ roleLabel }}</div>
 
       <div v-if="role === 'bot'" class="bubble-bot prose-content" v-html="renderedText"></div>
       <div v-else-if="role === 'err'" class="bubble-err">
@@ -63,6 +77,7 @@ const renderedText = computed(() => {
           </button>
         </div>
       </div>
+      <div v-else-if="role === 'thought'" class="bubble-thought">{{ text }}</div>
       <div v-else class="bubble-user">{{ text }}</div>
     </div>
 
@@ -216,6 +231,34 @@ const renderedText = computed(() => {
   color: var(--text);
   line-height: 1.65;
   word-break: break-words;
+}
+
+/* ── Thought avatar ──────────────────────────────────── */
+.msg-avatar--thought {
+  background: rgba(160, 100, 255, 0.08);
+  border-color: rgba(160, 100, 255, 0.22);
+  color: rgba(180, 130, 255, 0.8);
+}
+
+/* ── Thought label ───────────────────────────────────── */
+.msg-row--thought .msg-label {
+  color: rgba(160, 100, 255, 0.5);
+}
+
+/* ── Thought bubble ──────────────────────────────────── */
+.bubble-thought {
+  background: rgba(140, 80, 255, 0.045);
+  border: 1px solid rgba(160, 100, 255, 0.15);
+  border-left: 2px solid rgba(160, 100, 255, 0.28);
+  border-radius: 2px 10px 10px 10px;
+  padding: 8px 13px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: rgba(200, 170, 255, 0.7);
+  font-style: italic;
+  line-height: 1.55;
+  word-break: break-words;
+  letter-spacing: 0.01em;
 }
 </style>
 

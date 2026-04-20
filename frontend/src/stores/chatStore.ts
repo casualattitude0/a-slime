@@ -9,7 +9,7 @@ export interface LLMErrorPayload {
 }
 
 export interface Message {
-  role: 'user' | 'bot' | 'err'
+  role: 'user' | 'bot' | 'err' | 'thought'
   text: string
   llmError?: LLMErrorPayload
 }
@@ -123,6 +123,7 @@ export const useChatStore = defineStore('chat', () => {
           }
           if (obj.event === 'status' && obj.label) {
             status.value = String(obj.label)
+            messages.value.push({ role: 'thought', text: String(obj.label) })
           }
           if (obj.event === 'done') {
             finalDone = obj

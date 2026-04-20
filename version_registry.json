@@ -4,7 +4,7 @@
     {
       "version_id": "default",
       "name": "Default",
-      "session_id": "e3b7ef3e-8a91-4727-98ea-5c6018b44fcd",
+      "session_id": "7462dec7-357b-45fb-b81c-f05cc76eeaf2",
       "memory_collection": "agent_memory",
       "rag_collection": "langchain",
       "model_profile": "default",
