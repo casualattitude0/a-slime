@@ -118,96 +118,86 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full bg-surface rounded-xl border border-gray-700 overflow-hidden">
+  <div class="panel-root">
     <!-- Tab bar -->
-    <div class="flex border-b border-gray-700 shrink-0">
+    <div class="tab-bar">
       <button
         v-for="tab in (['versions', 'memory', 'rag'] as const)"
         :key="tab"
         @click="loadTab(tab)"
-        class="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors"
-        :class="activeTab === tab
-          ? 'text-accent border-b-2 border-accent'
-          : 'text-gray-500 hover:text-gray-300'"
+        class="tab-btn"
+        :class="activeTab === tab ? 'tab-btn--active' : ''"
       >
-        <Layers v-if="tab === 'versions'" :size="13" />
-        <Brain v-else-if="tab === 'memory'" :size="13" />
-        <FileText v-else :size="13" />
+        <Layers v-if="tab === 'versions'" :size="12" />
+        <Brain v-else-if="tab === 'memory'" :size="12" />
+        <FileText v-else :size="12" />
         {{ tab === 'versions' ? '版本' : tab === 'memory' ? '記憶' : 'RAG' }}
       </button>
     </div>
 
-    <!-- ── Versions tab ─────────────────────────────────────────────────── -->
-    <div v-if="activeTab === 'versions'" class="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+    <!-- ── Versions tab ─────────────────────────────────── -->
+    <div v-if="activeTab === 'versions'" class="tab-content">
       <div
         v-for="v in versions"
         :key="v.version_id"
-        class="rounded-lg border p-2.5 text-xs transition-colors"
-        :class="v.is_active
-          ? 'border-accent bg-accent/10'
-          : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'"
+        class="ver-card"
+        :class="v.is_active ? 'ver-card--active' : ''"
       >
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-1.5">
-              <Check v-if="v.is_active" :size="12" class="text-accent shrink-0" />
-              <span class="font-medium text-gray-200 truncate">{{ v.name }}</span>
+        <div class="ver-card-body">
+          <div class="ver-info">
+            <div class="ver-name-row">
+              <Check v-if="v.is_active" :size="11" class="check-icon" />
+              <span class="ver-name">{{ v.name }}</span>
             </div>
-            <div class="text-gray-500 mt-0.5 truncate">{{ v.model_profile }}</div>
-            <div class="text-gray-600 mt-0.5 truncate">{{ fmtDate(v.created_at) }}</div>
+            <div class="ver-meta">{{ v.model_profile }}</div>
+            <div class="ver-date">{{ fmtDate(v.created_at) }}</div>
           </div>
-          <div class="flex items-center gap-1 shrink-0">
+          <div class="ver-actions">
             <button
               v-if="!v.is_active"
               @click="handleSwitchVersion(v.version_id)"
               :disabled="!!actionLoading"
-              class="p-1 rounded text-gray-400 hover:text-accent hover:bg-gray-700 disabled:opacity-40 transition-colors"
+              class="icon-btn icon-btn--accent"
               title="切換至此版本"
             >
-              <Loader2 v-if="actionLoading === `switch-${v.version_id}`" :size="13" class="animate-spin" />
-              <ChevronRight v-else :size="13" />
+              <Loader2 v-if="actionLoading === `switch-${v.version_id}`" :size="12" class="spin" />
+              <ChevronRight v-else :size="12" />
             </button>
             <button
               @click="handleDeleteVersion(v.version_id)"
               :disabled="!!actionLoading || (v.is_active && versions.length === 1)"
-              class="p-1 rounded text-gray-500 hover:text-error hover:bg-gray-700 disabled:opacity-40 transition-colors"
+              class="icon-btn icon-btn--danger"
               title="刪除版本"
             >
-              <Loader2 v-if="actionLoading === `del-ver-${v.version_id}`" :size="13" class="animate-spin" />
-              <Trash2 v-else :size="13" />
+              <Loader2 v-if="actionLoading === `del-ver-${v.version_id}`" :size="12" class="spin" />
+              <Trash2 v-else :size="12" />
             </button>
           </div>
         </div>
       </div>
 
       <!-- New version form -->
-      <div v-if="showNewVersionForm" class="rounded-lg border border-gray-700 p-2.5 text-xs flex flex-col gap-2">
+      <div v-if="showNewVersionForm" class="new-ver-form">
         <input
           v-model="newVersionName"
-          placeholder="版本名稱"
+          placeholder="Version name"
           @keyup.enter="handleCreateVersion"
-          class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent text-xs"
+          class="panel-input"
         />
-        <select
-          v-model="newVersionProfile"
-          class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-gray-200 focus:outline-none focus:border-accent text-xs"
-        >
+        <select v-model="newVersionProfile" class="panel-input">
           <option v-for="p in availableProfiles" :key="p" :value="p">{{ p }}</option>
         </select>
         <div class="flex gap-1.5">
           <button
             @click="handleCreateVersion"
             :disabled="!newVersionName.trim() || !!actionLoading"
-            class="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-accent text-gray-900 font-medium disabled:opacity-40 hover:bg-accent/90 transition-colors"
+            class="form-btn form-btn--primary"
           >
-            <Loader2 v-if="actionLoading === 'create'" :size="12" class="animate-spin" />
+            <Loader2 v-if="actionLoading === 'create'" :size="11" class="spin" />
             <span>建立</span>
           </button>
-          <button
-            @click="showNewVersionForm = false"
-            class="px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:text-gray-200 transition-colors"
-          >
-            <X :size="12" />
+          <button @click="showNewVersionForm = false" class="form-btn form-btn--ghost">
+            <X :size="11" />
           </button>
         </div>
       </div>
@@ -215,125 +205,117 @@ onMounted(async () => {
       <button
         v-if="!showNewVersionForm"
         @click="showNewVersionForm = true"
-        class="flex items-center gap-1.5 text-xs text-gray-500 hover:text-accent transition-colors mt-1"
+        class="add-btn"
       >
-        <Plus :size="12" />
+        <Plus :size="11" />
         新增版本
       </button>
     </div>
 
-    <!-- ── Memory tab ───────────────────────────────────────────────────── -->
-    <div v-else-if="activeTab === 'memory'" class="flex-1 overflow-y-auto flex flex-col">
-      <div class="flex items-center justify-between px-3 py-2 border-b border-gray-700/60 shrink-0">
-        <span class="text-xs text-gray-500">{{ memoryItems.length }} 筆記憶</span>
-        <div class="flex gap-1.5">
-          <button @click="chatStore.fetchMemoryItems()" :disabled="memoryLoading" class="p-1 rounded text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors">
-            <RefreshCw :size="12" :class="memoryLoading ? 'animate-spin' : ''" />
+    <!-- ── Memory tab ──────────────────────────────────── -->
+    <div v-else-if="activeTab === 'memory'" class="tab-content-flex">
+      <div class="list-toolbar">
+        <span class="list-count">{{ memoryItems.length }} 筆記憶</span>
+        <div class="flex gap-1">
+          <button @click="chatStore.fetchMemoryItems()" :disabled="memoryLoading" class="icon-btn">
+            <RefreshCw :size="11" :class="memoryLoading ? 'spin' : ''" />
           </button>
           <button
             v-if="memoryItems.length > 0"
             @click="confirmDeleteAll = 'memory'"
             :disabled="!!actionLoading"
-            class="text-xs px-2 py-0.5 rounded border border-gray-700 text-gray-500 hover:text-error hover:border-error disabled:opacity-40 transition-colors"
+            class="text-btn text-btn--danger"
           >清空</button>
         </div>
       </div>
 
-      <div v-if="memoryLoading" class="flex-1 flex items-center justify-center">
-        <Loader2 :size="20" class="animate-spin text-accent" />
+      <div v-if="memoryLoading" class="list-loading">
+        <Loader2 :size="18" class="spin accent-icon" />
       </div>
-      <div v-else-if="memoryItems.length === 0" class="flex-1 flex items-center justify-center text-xs text-gray-600">無記憶項目</div>
-      <div v-else class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
-        <div
-          v-for="item in memoryItems"
-          :key="item.id"
-          class="rounded-lg border border-gray-700 p-2 text-xs flex items-start gap-2 hover:border-gray-600 bg-gray-800/40"
-        >
-          <div class="flex-1 min-w-0">
-            <p class="text-gray-300 line-clamp-2 break-words">{{ item.content }}</p>
-            <div class="flex gap-2 mt-1 text-gray-600">
+      <div v-else-if="memoryItems.length === 0" class="list-empty">無記憶項目</div>
+      <div v-else class="list-scroll">
+        <div v-for="item in memoryItems" :key="item.id" class="list-item">
+          <div class="list-item-body">
+            <p class="list-item-text">{{ item.content }}</p>
+            <div class="list-item-meta">
               <span v-if="item.metadata?.ts">{{ fmtDate(item.metadata.ts) }}</span>
-              <span v-if="item.metadata?.tags" class="text-accent/70">{{ item.metadata.tags }}</span>
+              <span v-if="item.metadata?.tags" class="meta-tag">{{ item.metadata.tags }}</span>
             </div>
           </div>
           <button
             @click="handleDeleteMemory(item.id)"
             :disabled="!!actionLoading"
-            class="shrink-0 p-1 rounded text-gray-600 hover:text-error hover:bg-gray-700 disabled:opacity-40 transition-colors"
+            class="icon-btn icon-btn--danger"
           >
-            <Loader2 v-if="actionLoading === `del-mem-${item.id}`" :size="12" class="animate-spin" />
-            <Trash2 v-else :size="12" />
+            <Loader2 v-if="actionLoading === `del-mem-${item.id}`" :size="11" class="spin" />
+            <Trash2 v-else :size="11" />
           </button>
         </div>
       </div>
     </div>
 
-    <!-- ── RAG tab ──────────────────────────────────────────────────────── -->
-    <div v-else-if="activeTab === 'rag'" class="flex-1 overflow-y-auto flex flex-col">
-      <div class="flex items-center justify-between px-3 py-2 border-b border-gray-700/60 shrink-0">
-        <span class="text-xs text-gray-500">{{ ragItems.length }} 筆文件</span>
-        <div class="flex gap-1.5">
-          <button @click="chatStore.fetchRagItems()" :disabled="ragLoading" class="p-1 rounded text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors">
-            <RefreshCw :size="12" :class="ragLoading ? 'animate-spin' : ''" />
+    <!-- ── RAG tab ─────────────────────────────────────── -->
+    <div v-else-if="activeTab === 'rag'" class="tab-content-flex">
+      <div class="list-toolbar">
+        <span class="list-count">{{ ragItems.length }} 筆文件</span>
+        <div class="flex gap-1">
+          <button @click="chatStore.fetchRagItems()" :disabled="ragLoading" class="icon-btn">
+            <RefreshCw :size="11" :class="ragLoading ? 'spin' : ''" />
           </button>
           <button
             v-if="ragItems.length > 0"
             @click="confirmDeleteAll = 'rag'"
             :disabled="!!actionLoading"
-            class="text-xs px-2 py-0.5 rounded border border-gray-700 text-gray-500 hover:text-error hover:border-error disabled:opacity-40 transition-colors"
+            class="text-btn text-btn--danger"
           >清空</button>
         </div>
       </div>
 
-      <div v-if="ragLoading" class="flex-1 flex items-center justify-center">
-        <Loader2 :size="20" class="animate-spin text-accent" />
+      <div v-if="ragLoading" class="list-loading">
+        <Loader2 :size="18" class="spin accent-icon" />
       </div>
-      <div v-else-if="ragItems.length === 0" class="flex-1 flex items-center justify-center text-xs text-gray-600">無 RAG 文件</div>
-      <div v-else class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
-        <div
-          v-for="item in ragItems"
-          :key="item.id"
-          class="rounded-lg border border-gray-700 p-2 text-xs flex items-start gap-2 hover:border-gray-600 bg-gray-800/40"
-        >
-          <div class="flex-1 min-w-0">
-            <p class="text-gray-300 line-clamp-2 break-words">{{ item.content }}</p>
-            <p v-if="item.metadata?.source" class="text-gray-600 mt-0.5 truncate">{{ item.metadata.source }}</p>
+      <div v-else-if="ragItems.length === 0" class="list-empty">無 RAG 文件</div>
+      <div v-else class="list-scroll">
+        <div v-for="item in ragItems" :key="item.id" class="list-item">
+          <div class="list-item-body">
+            <p class="list-item-text">{{ item.content }}</p>
+            <p v-if="item.metadata?.source" class="list-item-source">{{ item.metadata.source }}</p>
           </div>
           <button
             @click="handleDeleteRag(item.id)"
             :disabled="!!actionLoading"
-            class="shrink-0 p-1 rounded text-gray-600 hover:text-error hover:bg-gray-700 disabled:opacity-40 transition-colors"
+            class="icon-btn icon-btn--danger"
           >
-            <Loader2 v-if="actionLoading === `del-rag-${item.id}`" :size="12" class="animate-spin" />
-            <Trash2 v-else :size="12" />
+            <Loader2 v-if="actionLoading === `del-rag-${item.id}`" :size="11" class="spin" />
+            <Trash2 v-else :size="11" />
           </button>
         </div>
       </div>
     </div>
 
-    <!-- ── Danger zone ─────────────────────────────────────────────────── -->
-    <div class="shrink-0 border-t border-gray-700/60 p-2">
+    <!-- ── Danger zone ─────────────────────────────────── -->
+    <div class="danger-zone">
       <button
         @click="confirmDeleteAll = 'all'"
         :disabled="!!actionLoading || isLoading"
-        class="w-full text-xs py-1.5 rounded border border-gray-700 text-gray-600 hover:text-error hover:border-error disabled:opacity-40 transition-colors"
+        class="danger-btn"
       >
-        <AlertTriangle class="inline mr-1" :size="11" />
+        <AlertTriangle :size="11" />
         全部清除
       </button>
     </div>
 
-    <!-- ── Confirm overlay ─────────────────────────────────────────────── -->
+    <!-- ── Confirm overlay ─────────────────────────────── -->
     <Teleport to="body">
       <div
         v-if="confirmDeleteAll"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+        class="overlay"
         @click.self="confirmDeleteAll = ''"
       >
-        <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 max-w-xs w-full mx-4 shadow-2xl">
-          <div class="flex items-center gap-2 mb-3">
-            <AlertTriangle :size="18" class="text-error shrink-0" />
-            <p class="text-sm font-medium text-gray-200">
+        <div class="confirm-dialog">
+          <div class="confirm-header">
+            <AlertTriangle :size="16" class="error-icon" />
+            <p class="confirm-msg">
               {{ confirmDeleteAll === 'all'
                 ? '確認全部清除？此操作不可復原。'
                 : confirmDeleteAll === 'memory'
@@ -341,11 +323,8 @@ onMounted(async () => {
                   : '確認清空所有 RAG 文件？' }}
             </p>
           </div>
-          <div class="flex gap-2 justify-end">
-            <button
-              @click="confirmDeleteAll = ''"
-              class="px-3 py-1.5 text-xs rounded border border-gray-700 text-gray-400 hover:text-gray-200 transition-colors"
-            >取消</button>
+          <div class="confirm-actions">
+            <button @click="confirmDeleteAll = ''" class="form-btn form-btn--ghost">取消</button>
             <button
               @click="
                 confirmDeleteAll === 'all'
@@ -355,12 +334,12 @@ onMounted(async () => {
                     : handleDeleteAllRag()
               "
               :disabled="!!actionLoading"
-              class="px-3 py-1.5 text-xs rounded bg-error text-white font-medium disabled:opacity-60 hover:bg-error/80 transition-colors"
+              class="form-btn form-btn--error"
             >
               <Loader2
                 v-if="actionLoading === 'del-all' || actionLoading === 'del-mem-all' || actionLoading === 'del-rag-all'"
-                :size="12"
-                class="animate-spin inline mr-1"
+                :size="11"
+                class="spin"
               />
               確認刪除
             </button>
@@ -370,3 +349,491 @@ onMounted(async () => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.panel-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* ── Tab bar ─────────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.14s ease;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.03em;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tab-btn--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: rgba(0, 229, 255, 0.04);
+}
+
+/* ── Tab content ─────────────────────────────────────── */
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tab-content-flex {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Version card ────────────────────────────────────── */
+.ver-card {
+  border-radius: 8px;
+  border: 1px solid var(--border-bright);
+  padding: 9px 10px;
+  background: var(--surface-2);
+  transition: border-color 0.14s ease;
+}
+
+.ver-card:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.ver-card--active {
+  border-color: rgba(0, 229, 255, 0.28);
+  background: rgba(0, 229, 255, 0.04);
+}
+
+.ver-card-body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ver-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ver-name-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.check-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ver-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ver-meta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ver-date {
+  font-size: 10px;
+  color: rgba(107, 114, 128, 0.6);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ver-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+/* ── New version form ────────────────────────────────── */
+.new-ver-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border-bright);
+  padding: 10px;
+  background: var(--surface-2);
+}
+
+.panel-input {
+  width: 100%;
+  background: var(--surface-3);
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.14s ease;
+}
+
+.panel-input::placeholder {
+  color: var(--text-dim);
+}
+
+.panel-input:focus {
+  border-color: rgba(0, 229, 255, 0.35);
+}
+
+/* ── Add version button ──────────────────────────────── */
+.add-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: color 0.14s ease;
+}
+
+.add-btn:hover {
+  color: var(--accent);
+}
+
+/* ── List toolbar ────────────────────────────────────── */
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.list-count {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-family: ui-monospace, monospace;
+}
+
+/* ── List states ─────────────────────────────────────── */
+.list-loading,
+.list-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* ── List item ───────────────────────────────────────── */
+.list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border-radius: 7px;
+  border: 1px solid var(--border-bright);
+  padding: 8px 10px;
+  background: var(--surface-2);
+  transition: border-color 0.14s ease;
+}
+
+.list-item:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.list-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item-text {
+  font-size: 11.5px;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-words;
+  margin: 0 0 3px;
+  line-height: 1.5;
+}
+
+.list-item-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.meta-tag {
+  color: rgba(0, 229, 255, 0.5);
+  font-family: ui-monospace, monospace;
+}
+
+.list-item-source {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 3px 0 0;
+  font-family: ui-monospace, monospace;
+}
+
+/* ── Danger zone ─────────────────────────────────────── */
+.danger-zone {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+}
+
+.danger-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-bright);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  transition: all 0.14s ease;
+}
+
+.danger-btn:hover {
+  color: var(--error);
+  border-color: rgba(255, 77, 106, 0.25);
+  background: rgba(255, 77, 106, 0.05);
+}
+
+.danger-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Icon buttons ────────────────────────────────────── */
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.13s ease;
+}
+
+.icon-btn:hover {
+  background: var(--surface-3);
+  border-color: var(--border-bright);
+  color: var(--text);
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.icon-btn--accent:hover {
+  color: var(--accent);
+  border-color: rgba(0, 229, 255, 0.2);
+  background: rgba(0, 229, 255, 0.06);
+}
+
+.icon-btn--danger:hover {
+  color: var(--error);
+  border-color: rgba(255, 77, 106, 0.2);
+  background: rgba(255, 77, 106, 0.06);
+}
+
+/* ── Text buttons ────────────────────────────────────── */
+.text-btn {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-bright);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.13s ease;
+}
+
+.text-btn--danger:hover {
+  color: var(--error);
+  border-color: rgba(255, 77, 106, 0.25);
+}
+
+.text-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Form buttons ────────────────────────────────────── */
+.form-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-bright);
+  transition: all 0.14s ease;
+}
+
+.form-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0a0b0f;
+}
+
+.form-btn--primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.form-btn--ghost {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.form-btn--ghost:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.form-btn--error {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}
+
+.form-btn--error:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Overlay ─────────────────────────────────────────── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+}
+
+.confirm-dialog {
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 300px;
+  width: calc(100% - 32px);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+}
+
+.confirm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.error-icon {
+  color: var(--error);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.confirm-msg {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.45;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ── Shared utilities ────────────────────────────────── */
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+.accent-icon {
+  color: var(--accent);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+</style>

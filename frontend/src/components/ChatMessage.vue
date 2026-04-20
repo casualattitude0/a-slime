@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, AlertTriangle } from 'lucide-vue-next'
+import { User, AlertTriangle, Wrench, Zap } from 'lucide-vue-next'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
+import type { LLMErrorPayload } from '../stores/chatStore'
 
 const props = defineProps<{
   role: 'user' | 'bot' | 'err'
   text: string
+  llmError?: LLMErrorPayload
+  showActions?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'fix-issue'): void
+  (e: 'answer-immediately'): void
 }>()
 
 const md = new MarkdownIt({
@@ -15,101 +23,306 @@ const md = new MarkdownIt({
 })
 
 const renderedText = computed(() => {
-  if (props.role === 'bot') {
-    return md.render(props.text)
-  }
+  if (props.role === 'bot') return md.render(props.text)
   return props.text
 })
 </script>
 
 <template>
-  <div 
-    class="flex gap-4 p-4 rounded-xl mb-4"
+  <div
+    class="msg-row"
     :class="{
-      'bg-surface': role === 'bot' || role === 'err',
-      'bg-transparent': role === 'user'
+      'msg-row--user': role === 'user',
+      'msg-row--bot': role === 'bot',
+      'msg-row--err': role === 'err',
     }"
   >
-    <div class="shrink-0 mt-1">
-      <div
-        class="w-8 h-8 rounded-full flex items-center justify-center overflow-hidden"
-        :class="{
-          'bg-accent text-gray-900': role === 'user',
-          'bg-gray-700 text-gray-200': role === 'bot',
-          'bg-error text-white': role === 'err'
-        }"
-      >
-        <User v-if="role === 'user'" :size="18" />
-        <img
-          v-else-if="role === 'bot'"
-          :src="aiSlimeAvatar"
-          alt="AI avatar"
-          class="w-full h-full object-cover"
-        />
-        <AlertTriangle v-else :size="18" />
-      </div>
+    <!-- Avatar (bot / err left side) -->
+    <div v-if="role !== 'user'" class="msg-avatar" :class="role === 'err' ? 'msg-avatar--err' : ''">
+      <img v-if="role === 'bot'" :src="aiSlimeAvatar" alt="AI" class="avatar-img" />
+      <AlertTriangle v-else :size="14" />
     </div>
-    
-    <div class="flex-1 min-w-0">
-      <div class="font-semibold mb-1 text-sm text-gray-400">
+
+    <!-- Bubble -->
+    <div class="msg-bubble">
+      <div class="msg-label">
         {{ role === 'user' ? 'You' : role === 'bot' ? 'Agent' : 'Error' }}
       </div>
-      
-      <div 
-        v-if="role === 'bot'" 
-        class="prose prose-invert max-w-none text-gray-200"
-        v-html="renderedText"
-      ></div>
-      <div 
-        v-else-if="role === 'err'" 
-        class="text-error whitespace-pre-wrap break-words text-sm"
-      >
-        {{ text }}
+
+      <div v-if="role === 'bot'" class="bubble-bot prose-content" v-html="renderedText"></div>
+      <div v-else-if="role === 'err'" class="bubble-err">
+        <span>{{ text }}</span>
+        <div v-if="llmError?.is_llm_error && showActions" class="err-actions">
+          <button class="err-action-btn" @click="emit('fix-issue')">
+            <Wrench :size="12" />
+            Fix issue
+          </button>
+          <button class="err-action-btn" @click="emit('answer-immediately')">
+            <Zap :size="12" />
+            Answer immediately
+          </button>
+        </div>
       </div>
-      <div 
-        v-else 
-        class="text-gray-200 whitespace-pre-wrap break-words"
-      >
-        {{ text }}
-      </div>
+      <div v-else class="bubble-user">{{ text }}</div>
+    </div>
+
+    <!-- Avatar (user right side) -->
+    <div v-if="role === 'user'" class="msg-avatar msg-avatar--user">
+      <User :size="14" />
     </div>
   </div>
 </template>
 
+<style scoped>
+.msg-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 22px;
+  align-items: flex-start;
+}
+
+.msg-row--user {
+  flex-direction: row-reverse;
+}
+
+/* ── Avatar ──────────────────────────────────────────── */
+.msg-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+}
+
+.msg-avatar--user {
+  background: rgba(0, 229, 255, 0.08);
+  border-color: rgba(0, 229, 255, 0.25);
+  color: var(--accent);
+}
+
+.msg-avatar--err {
+  background: rgba(255, 77, 106, 0.08);
+  border-color: rgba(255, 77, 106, 0.25);
+  color: var(--error);
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ── Bubble wrapper ──────────────────────────────────── */
+.msg-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 80%;
+}
+
+.msg-row--user .msg-bubble {
+  align-items: flex-end;
+}
+
+/* ── Label ───────────────────────────────────────────── */
+.msg-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-family: ui-monospace, monospace;
+  padding: 0 2px;
+}
+
+.msg-row--bot .msg-label,
+.msg-row--err .msg-label {
+  color: var(--text-dim);
+}
+
+.msg-row--user .msg-label {
+  color: rgba(0, 229, 255, 0.45);
+}
+
+/* ── User bubble ─────────────────────────────────────── */
+.bubble-user {
+  background: rgba(0, 229, 255, 0.065);
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 10px 2px 10px 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-words;
+  line-height: 1.55;
+}
+
+/* ── Error bubble ────────────────────────────────────── */
+.bubble-err {
+  background: rgba(255, 77, 106, 0.065);
+  border: 1px solid rgba(255, 77, 106, 0.18);
+  border-radius: 2px 10px 10px 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--error);
+  white-space: pre-wrap;
+  word-break: break-words;
+  line-height: 1.55;
+}
+
+/* ── Error action buttons ────────────────────────────── */
+.err-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.err-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 77, 106, 0.3);
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 77, 106, 0.04);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.err-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 229, 255, 0.06);
+}
+
+/* ── Bot bubble ──────────────────────────────────────── */
+.bubble-bot {
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-left: 2px solid rgba(0, 229, 255, 0.22);
+  border-radius: 2px 10px 10px 10px;
+  padding: 12px 16px;
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.65;
+  word-break: break-words;
+}
+</style>
+
+<!-- Global prose styles for v-html rendered markdown -->
 <style>
-/* Basic prose styles for markdown-it output */
-.prose p {
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
-}
-.prose pre {
-  background-color: #1a1b1e;
-  padding: 1em;
-  border-radius: 0.5rem;
+.bubble-bot p { margin: 0.35em 0; }
+.bubble-bot p:first-child { margin-top: 0; }
+.bubble-bot p:last-child { margin-bottom: 0; }
+
+.bubble-bot pre {
+  background: #060709;
+  padding: 12px 14px;
+  border-radius: 8px;
   overflow-x: auto;
-  border: 1px solid #373a40;
+  border: 1px solid rgba(0, 229, 255, 0.09);
+  margin: 10px 0;
+  font-size: 12.5px;
 }
-.prose code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.875em;
-  background-color: #1a1b1e;
-  padding: 0.2em 0.4em;
-  border-radius: 0.25rem;
+
+.bubble-bot code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.845em;
+  background: rgba(0, 229, 255, 0.07);
+  color: #a5f3fc;
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 229, 255, 0.11);
 }
-.prose pre code {
-  background-color: transparent;
+
+.bubble-bot pre code {
+  background: transparent;
   padding: 0;
+  border: none;
+  color: #c9d1d9;
+  font-size: 13px;
 }
-.prose ul {
+
+.bubble-bot ul {
   list-style-type: disc;
-  padding-left: 1.5em;
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
+  padding-left: 1.4em;
+  margin: 6px 0;
 }
-.prose ol {
+
+.bubble-bot ol {
   list-style-type: decimal;
-  padding-left: 1.5em;
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
+  padding-left: 1.4em;
+  margin: 6px 0;
+}
+
+.bubble-bot li { margin: 3px 0; }
+
+.bubble-bot h1,
+.bubble-bot h2,
+.bubble-bot h3 {
+  font-weight: 600;
+  margin: 0.9em 0 0.3em;
+  color: #e2e4ea;
+}
+
+.bubble-bot h1 { font-size: 1.2em; }
+.bubble-bot h2 { font-size: 1.08em; }
+.bubble-bot h3 { font-size: 1em; }
+
+.bubble-bot blockquote {
+  border-left: 2px solid rgba(0, 229, 255, 0.28);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: #8b90a0;
+  font-style: italic;
+}
+
+.bubble-bot a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(0, 229, 255, 0.28);
+}
+
+.bubble-bot a:hover {
+  border-bottom-color: var(--accent);
+}
+
+.bubble-bot hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  margin: 12px 0;
+}
+
+.bubble-bot table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 10px 0;
+}
+
+.bubble-bot th {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 229, 255, 0.14);
+  color: rgba(0, 229, 255, 0.65);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-family: ui-monospace, monospace;
+}
+
+.bubble-bot td {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 </style>

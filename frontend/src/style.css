@@ -1,18 +1,67 @@
 @import "tailwindcss";
 
+@theme {
+  --color-bg: #0a0b0f;
+  --color-surface: #111318;
+  --color-surface-2: #181b22;
+  --color-surface-3: #1e2229;
+  --color-accent: #00e5ff;
+  --color-secondary: #8b5cf6;
+  --color-error: #ff4d6a;
+  --color-success: #00ffa3;
+  --color-muted: #6b7280;
+}
+
 :root {
-  --bg: #1a1b1e;
-  --surface: #25262b;
-  --text: #e9e9ef;
-  --muted: #909296;
-  --accent: #4dabf7;
-  --error: #ff6b6b;
+  --bg: #0a0b0f;
+  --surface: #111318;
+  --surface-2: #181b22;
+  --surface-3: #1e2229;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-bright: rgba(255, 255, 255, 0.11);
+  --text: #e2e4ea;
+  --text-dim: #6b7280;
+  --accent: #00e5ff;
+  --accent-soft: rgba(0, 229, 255, 0.09);
+  --accent-glow: rgba(0, 229, 255, 0.28);
+  --secondary: #8b5cf6;
+  --secondary-soft: rgba(139, 92, 246, 0.1);
+  --error: #ff4d6a;
+  --error-soft: rgba(255, 77, 106, 0.09);
+  --success: #00ffa3;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
   background: var(--bg);
+  background-image:
+    radial-gradient(ellipse 90% 55% at 50% -10%, rgba(0, 229, 255, 0.035) 0%, transparent 65%),
+    radial-gradient(ellipse 55% 45% at 85% 85%, rgba(139, 92, 246, 0.025) 0%, transparent 60%);
+  background-attachment: fixed;
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-bright);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 229, 255, 0.25);
 }

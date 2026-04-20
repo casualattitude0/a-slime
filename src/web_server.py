@@ -21,7 +21,9 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
 from src.agent import (
+    LLMErrorInfo,
     build_executor,
+    classify_llm_error,
     delete_all_rag_items,
     delete_rag_item,
     invoke_executor,
@@ -147,10 +149,15 @@ class ChatResponse(BaseModel):
     reply: str = ""
     session_id: str = ""
     error: str | None = None
+    llm_error: dict | None = None
 
 
 class ClearRequest(BaseModel):
     session_id: str | None = None
+
+
+class TerminateRequest(BaseModel):
+    session_id: str
 
 
 class VersionSwitchRequest(BaseModel):
@@ -272,6 +279,7 @@ async def _lifespan(app: FastAPI):
         raise RuntimeError(str(exc)) from exc
 
     app.state.sessions: dict[str, list[BaseMessage]] = {}
+    app.state.cancel_events: dict[str, threading.Event] = {}
     app.state.lock = asyncio.Lock()
     yield
 
@@ -329,6 +337,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             history_for_prompt = list(hist)
             executor = _get_executor(app, version.version_id, msg, len(hist))
 
+            llm_err_info: LLMErrorInfo | None = None
             try:
                 result = await asyncio.to_thread(
                     invoke_executor,
@@ -336,6 +345,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
                     {"input": msg, "chat_history": history_for_prompt},
                 )
             except Exception as exc:
+                llm_err_info = classify_llm_error(exc)
+                if llm_err_info.is_llm_error:
+                    hist.append(HumanMessage(content=msg))
+                    hist.append(AIMessage(content=""))
+                    _trim_session(hist)
+                    return ChatResponse(
+                        reply="",
+                        session_id=sid,
+                        error=llm_err_info.message,
+                        llm_error=llm_err_info.to_dict(),
+                    )
                 return ChatResponse(reply="", session_id=sid, error=str(exc))
 
             out = result.get("output")
@@ -357,6 +377,7 @@ async def chat_stream(req: ChatRequest):
 
     lock: asyncio.Lock = app.state.lock
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    cancel_events: dict[str, threading.Event] = app.state.cancel_events
     registry: VersionRegistry = app.state.version_registry
 
     async with lock:
@@ -371,6 +392,12 @@ async def chat_stream(req: ChatRequest):
             registry.update_session(version.version_id, sid)
 
         hist = sessions[sid]
+        cancel_event = cancel_events.get(sid)
+        if cancel_event is None:
+            cancel_event = threading.Event()
+            cancel_events[sid] = cancel_event
+        else:
+            cancel_event.clear()
         local_reply = _simple_local_reply(msg)
         if local_reply is None:
             local_reply = await asyncio.to_thread(local_quick_reply, msg, len(hist))
@@ -406,6 +433,8 @@ async def chat_stream(req: ChatRequest):
 
     def worker() -> None:
         def sink(ev: dict[str, Any]) -> None:
+            if cancel_event.is_set():
+                return
             q.put(("status", ev))
 
         try:
@@ -419,7 +448,11 @@ async def chat_stream(req: ChatRequest):
 
     async def ndjson_gen():
         finished = False
+        terminated = False
         while not finished:
+            if cancel_event.is_set():
+                terminated = True
+                break
             await asyncio.sleep(0.02)
             try:
                 while True:
@@ -428,6 +461,9 @@ async def chat_stream(req: ChatRequest):
                         finished = True
                         break
                     if kind == "status" and isinstance(data, dict):
+                        if cancel_event.is_set():
+                            terminated = True
+                            break
                         yield json.dumps(
                             {
                                 "event": "status",
@@ -439,11 +475,35 @@ async def chat_stream(req: ChatRequest):
             except queue.Empty:
                 continue
 
+        if terminated:
+            async with lock:
+                hist2 = sessions.get(sid, [])
+                hist2.append(HumanMessage(content=msg))
+                _trim_session(hist2)
+            yield json.dumps(
+                {
+                    "event": "done",
+                    "reply": "",
+                    "session_id": sid,
+                    "error": None,
+                    "llm_error": None,
+                    "terminated": True,
+                },
+                ensure_ascii=False,
+            ) + "\n"
+            return
+
         err: str | None = None
         reply = ""
+        llm_error_payload: dict | None = None
         exc = box.get("error")
         if exc is not None:
-            err = str(exc)
+            err_info = classify_llm_error(exc)
+            if err_info.is_llm_error:
+                err = err_info.message
+                llm_error_payload = err_info.to_dict()
+            else:
+                err = str(exc)
         else:
             result = box.get("result") or {}
             out = result.get("output")
@@ -465,11 +525,57 @@ async def chat_stream(req: ChatRequest):
                 "reply": reply,
                 "session_id": sid,
                 "error": err,
+                "llm_error": llm_error_payload,
+                "terminated": False,
             },
             ensure_ascii=False,
         ) + "\n"
 
     return StreamingResponse(ndjson_gen(), media_type="application/x-ndjson")
+
+
+@app.post("/api/chat/fallback", response_model=ChatResponse)
+async def chat_fallback(req: ChatRequest) -> ChatResponse:
+    """Immediate local/Ollama fallback used when the primary LLM has failed."""
+    msg = req.message.strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    lock: asyncio.Lock = app.state.lock
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+
+    async with lock:
+        sid = req.session_id or ""
+        if not sid or sid not in sessions:
+            raise HTTPException(status_code=400, detail="Invalid or missing session_id")
+        hist = list(sessions[sid])
+
+    ollama_ex = getattr(app.state, "executor_ollama", None)
+    if ollama_ex is None:
+        return ChatResponse(
+            reply="本地模型（Ollama）不可用。請檢查 API 配額或帳單後重試。",
+            session_id=sid,
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            invoke_executor,
+            ollama_ex,
+            {"input": msg, "chat_history": hist},
+        )
+    except Exception as exc:
+        return ChatResponse(reply="", session_id=sid, error=str(exc))
+
+    out = result.get("output")
+    reply = normalize_agent_output(out)
+    err = None if reply else f"No text output; full result: {result!r}"
+
+    async with lock:
+        hist2 = sessions.get(sid, [])
+        hist2.append(AIMessage(content=reply if reply else err or ""))
+        _trim_session(hist2)
+
+    return ChatResponse(reply=reply, session_id=sid, error=err)
 
 
 @app.post("/api/clear")
@@ -482,6 +588,17 @@ async def clear_session(req: ClearRequest) -> dict[str, bool | str | None]:
         if sid and sid in sessions:
             sessions[sid].clear()
         return {"ok": True, "session_id": sid}
+
+
+@app.post("/api/chat/terminate")
+async def terminate_chat(req: TerminateRequest) -> dict[str, bool]:
+    lock: asyncio.Lock = app.state.lock
+    cancel_events: dict[str, threading.Event] = app.state.cancel_events
+    async with lock:
+        ev = cancel_events.get(req.session_id)
+        if ev is not None:
+            ev.set()
+    return {"ok": True}
 
 
 # ─── Version endpoints ────────────────────────────────────────────────────────
