@@ -8,11 +8,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'send', text: string): void
+  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' }): void
   (e: 'terminate'): void
 }>()
 
 const input = ref('')
+const llmMode = ref<'auto' | 'gemini'>('auto')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const isComposingWithIME = ref(false)
 
@@ -37,7 +38,7 @@ const handleCompositionEnd = () => { isComposingWithIME.value = false }
 const send = () => {
   const text = input.value.trim()
   if (!text || props.disabled) return
-  emit('send', text)
+  emit('send', { text, llmMode: llmMode.value })
   input.value = ''
   nextTick(() => {
     adjustHeight()
@@ -57,6 +58,10 @@ onMounted(() => {
 
 <template>
   <div class="composer" :class="{ 'composer--disabled': disabled }">
+    <select v-model="llmMode" class="llm-select" :disabled="disabled || loading" aria-label="LLM mode">
+      <option value="auto">Auto</option>
+      <option value="gemini">Gemini</option>
+    </select>
     <textarea
       ref="textareaRef"
       v-model="input"
@@ -127,6 +132,23 @@ onMounted(() => {
 
 .composer-input::placeholder {
   color: var(--text-dim);
+}
+
+.llm-select {
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  border-radius: 8px;
+  font-size: 12px;
+  height: 32px;
+  padding: 0 8px;
+  outline: none;
+  flex-shrink: 0;
+}
+
+.llm-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .composer-actions {

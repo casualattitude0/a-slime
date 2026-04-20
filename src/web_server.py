@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -187,6 +187,7 @@ def _simple_local_reply(message: str) -> str | None:
 class ChatRequest(BaseModel):
     message: str = Field(default="")
     session_id: str | None = None
+    llm_mode: Literal["auto", "gemini"] = "auto"
 
 
 class ChatResponse(BaseModel):
@@ -281,6 +282,25 @@ def _get_executor(app: FastAPI, version_id: str, user_message: str, history_len:
         return gemini_ex
 
     return executor
+
+
+def _get_executor_for_llm_mode(
+    app: FastAPI,
+    version_id: str,
+    user_message: str,
+    history_len: int,
+    llm_mode: Literal["auto", "gemini"],
+) -> Any:
+    if llm_mode == "gemini":
+        return getattr(app.state, "executor_gemini", None) or _get_executor(
+            app, version_id, user_message, history_len
+        )
+
+    # Auto mode keeps inference on the agent's own path and avoids large-model escalation.
+    ollama_ex = getattr(app.state, "executor_ollama", None)
+    if ollama_ex is not None:
+        return ollama_ex
+    return _get_executor(app, version_id, user_message, history_len)
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -402,7 +422,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
             err = None
         else:
             history_for_prompt = list(hist)
-            executor = _get_executor(app, version.version_id, msg, len(hist))
+            executor = _get_executor_for_llm_mode(
+                app, version.version_id, msg, len(hist), req.llm_mode
+            )
 
             llm_err_info: LLMErrorInfo | None = None
             try:
@@ -453,6 +475,7 @@ async def _resolve_session(
     app: FastAPI,
     req_session_id: str | None,
     msg: str,
+    llm_mode: Literal["auto", "gemini"] = "auto",
 ) -> tuple[str, list[BaseMessage], Any, dict[str, Any] | None, threading.Event]:
     """Resolve (or create) a session and return the objects needed for streaming.
 
@@ -506,7 +529,9 @@ async def _resolve_session(
             return sid, list(hist), None, {"local_reply": local_reply}, cancel_event
 
         history_for_prompt = list(hist)
-        executor = _get_executor(app, version.version_id, msg, len(hist))
+        executor = _get_executor_for_llm_mode(
+            app, version.version_id, msg, len(hist), llm_mode
+        )
         payload = {"input": msg, "chat_history": history_for_prompt}
         return sid, history_for_prompt, executor, payload, cancel_event
 
@@ -610,7 +635,7 @@ async def chat_stream(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Empty message")
 
     sid, _hist, executor, payload, cancel_event = await _resolve_session(
-        app, req.session_id, msg
+        app, req.session_id, msg, req.llm_mode
     )
 
     # Fast local reply path.
@@ -689,10 +714,11 @@ async def ws_chat_live(websocket: WebSocket):
                 continue
 
             req_session_id: str | None = data.get("session_id") or None
+            llm_mode = "gemini" if data.get("llm_mode") == "gemini" else "auto"
 
             try:
                 sid, _hist, executor, payload, cancel_event = await _resolve_session(
-                    app, req_session_id, msg
+                    app, req_session_id, msg, llm_mode
                 )
             except Exception as exc:
                 await websocket.send_text(

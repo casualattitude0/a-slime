@@ -256,6 +256,9 @@ def local_quick_reply(user_message: str, history: list) -> str | None:
         "1) Decide whether the user's message is SIMPLE.\n"
         "2) If SIMPLE, provide a direct short answer using the conversation history below if relevant.\n"
         "3) If COMPLEX (needs web search, document retrieval, or multi-step reasoning), do not answer.\n\n"
+        "Language rule:\n"
+        '- If "simple" is true and you provide "reply", reply must be in zh-TW (Traditional Chinese).\n'
+        "- Do not use Simplified Chinese.\n\n"
         "SIMPLE includes: greetings, trivial math, direct factual questions, AND questions about "
         "what was said earlier in this conversation (those can be answered from the history).\n"
         "NOT SIMPLE: anything requiring current information, file search, or deep analysis.\n\n"

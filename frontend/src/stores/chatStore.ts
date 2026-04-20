@@ -45,6 +45,8 @@ export interface ChatEntry {
   updated_at: string
 }
 
+export type LLMMode = 'auto' | 'gemini'
+
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
   const sessionId = ref<string | null>(localStorage.getItem('agent_session_id'))
@@ -150,14 +152,14 @@ export const useChatStore = defineStore('chat', () => {
     return { done: false }
   }
 
-  async function _sendSSE(text: string) {
+  async function _sendSSE(text: string, llmMode: LLMMode) {
     activeController.value = new AbortController()
     try {
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: activeController.value.signal,
-        body: JSON.stringify({ message: text, session_id: sessionId.value }),
+        body: JSON.stringify({ message: text, session_id: sessionId.value, llm_mode: llmMode }),
       })
 
       if (!res.ok) {
@@ -205,7 +207,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function _sendWS(text: string) {
+  async function _sendWS(text: string, llmMode: LLMMode) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${location.host}/ws/chat/live`
 
@@ -214,7 +216,7 @@ export const useChatStore = defineStore('chat', () => {
       _activeWs = ws
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ message: text, session_id: sessionId.value }))
+        ws.send(JSON.stringify({ message: text, session_id: sessionId.value, llm_mode: llmMode }))
       }
 
       ws.onmessage = (ev) => {
@@ -239,7 +241,7 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, llmMode: LLMMode = 'auto') {
     if (!text.trim() || isLoading.value) return
 
     messages.value.push({ role: 'user', text })
@@ -251,9 +253,9 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       if (transport.value === 'ws' && typeof WebSocket !== 'undefined') {
-        await _sendWS(text)
+        await _sendWS(text, llmMode)
       } else {
-        await _sendSSE(text)
+        await _sendSSE(text, llmMode)
       }
     } finally {
       streamingBotIndex.value = -1

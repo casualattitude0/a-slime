@@ -48,8 +48,8 @@ onMounted(async () => {
   }
 })
 
-const handleSend = (text: string) => {
-  chatStore.sendMessage(text)
+const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' }) => {
+  chatStore.sendMessage(payload.text, payload.llmMode)
 }
 
 const handleTerminate = () => {
