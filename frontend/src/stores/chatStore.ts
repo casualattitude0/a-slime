@@ -55,6 +55,13 @@ export const useChatStore = defineStore('chat', () => {
   const ragLoading = ref<boolean>(false)
   const activeController = ref<AbortController | null>(null)
 
+  // Index of the bot message currently being streamed (-1 = none).
+  const streamingBotIndex = ref<number>(-1)
+  // Preferred transport: 'sse' | 'ws'
+  const transport = ref<'sse' | 'ws'>('ws')
+  // Active WebSocket for the current request (if ws transport).
+  let _activeWs: WebSocket | null = null
+
   function setSessionId(id: string | null) {
     sessionId.value = id
     if (id) {
@@ -64,24 +71,84 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(text: string) {
-    if (!text.trim() || isLoading.value) return
+  /** Handle one parsed event frame from either SSE or WebSocket transport. */
+  function _handleStreamEvent(obj: any, originalText: string): { done: boolean } {
+    if (obj.event === 'start') {
+      if (obj.session_id) setSessionId(obj.session_id)
+    }
 
-    messages.value.push({ role: 'user', text })
-    isLoading.value = true
-    status.value = ''
-    pendingLLMError.value = null
+    if (obj.event === 'status' && obj.label) {
+      status.value = String(obj.label)
+      // Insert thought bubbles only while the bot hasn't started replying yet.
+      if (streamingBotIndex.value === -1) {
+        messages.value.push({ role: 'thought', text: String(obj.label) })
+      }
+    }
+
+    if (obj.event === 'delta' && obj.text) {
+      if (streamingBotIndex.value === -1) {
+        // First delta: push a live bot message placeholder.
+        streamingBotIndex.value = messages.value.length
+        messages.value.push({ role: 'bot', text: String(obj.text) })
+      } else {
+        messages.value[streamingBotIndex.value].text += String(obj.text)
+      }
+    }
+
+    if (obj.event === 'done') {
+      if (obj.session_id) setSessionId(obj.session_id)
+      status.value = ''
+
+      if (obj.terminated) {
+        streamingBotIndex.value = -1
+        return { done: true }
+      }
+
+      if (obj.error) {
+        // Remove any partial bot message that was being built.
+        if (streamingBotIndex.value !== -1) {
+          messages.value.splice(streamingBotIndex.value, 1)
+          streamingBotIndex.value = -1
+        }
+        const llmErr: LLMErrorPayload | undefined = obj.llm_error ?? undefined
+        const idx = messages.value.length
+        messages.value.push({ role: 'err', text: obj.error, llmError: llmErr })
+        if (llmErr?.is_llm_error) {
+          pendingLLMError.value = { messageIndex: idx, payload: llmErr, originalText }
+        }
+      } else if (obj.reply) {
+        if (streamingBotIndex.value !== -1) {
+          // Replace the streaming placeholder with the authoritative final text.
+          messages.value[streamingBotIndex.value].text = obj.reply
+        } else {
+          messages.value.push({ role: 'bot', text: obj.reply })
+        }
+      }
+      streamingBotIndex.value = -1
+      return { done: true }
+    }
+
+    if (obj.event === 'error') {
+      status.value = ''
+      if (streamingBotIndex.value !== -1) {
+        messages.value.splice(streamingBotIndex.value, 1)
+        streamingBotIndex.value = -1
+      }
+      messages.value.push({ role: 'err', text: obj.error || 'Stream error' })
+      return { done: true }
+    }
+
+    return { done: false }
+  }
+
+  async function _sendSSE(text: string) {
     activeController.value = new AbortController()
-
     try {
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: activeController.value.signal,
-        body: JSON.stringify({
-          message: text,
-          session_id: sessionId.value,
-        }),
+        body: JSON.stringify({ message: text, session_id: sessionId.value }),
       })
 
       if (!res.ok) {
@@ -91,22 +158,19 @@ export const useChatStore = defineStore('chat', () => {
           ? d.map((x: any) => x.msg || JSON.stringify(x)).join('; ')
           : (d || res.statusText || 'Request failed')
         messages.value.push({ role: 'err', text: errText })
-        isLoading.value = false
         return
       }
 
       const reader = res.body?.getReader()
       if (!reader) {
         messages.value.push({ role: 'err', text: 'No response body' })
-        isLoading.value = false
         return
       }
 
       const dec = new TextDecoder()
       let buf = ''
-      let finalDone: any = null
 
-      while (true) {
+      outer: while (true) {
         const { done, value } = await reader.read()
         if (done) break
         buf += dec.decode(value, { stream: true })
@@ -115,51 +179,79 @@ export const useChatStore = defineStore('chat', () => {
           const line = buf.slice(0, nl).trim()
           buf = buf.slice(nl + 1)
           if (!line) continue
-          let obj
-          try {
-            obj = JSON.parse(line)
-          } catch {
-            continue
-          }
-          if (obj.event === 'status' && obj.label) {
-            status.value = String(obj.label)
-            messages.value.push({ role: 'thought', text: String(obj.label) })
-          }
-          if (obj.event === 'done') {
-            finalDone = obj
-          }
+          let obj: any
+          try { obj = JSON.parse(line) } catch { continue }
+          const { done: streamDone } = _handleStreamEvent(obj, text)
+          if (streamDone) break outer
         }
-      }
-
-      if (finalDone && finalDone.session_id) {
-        setSessionId(finalDone.session_id)
-      }
-      status.value = ''
-
-      if (finalDone && finalDone.terminated) {
-        return
-      }
-
-      if (finalDone && finalDone.error) {
-        const llmErr: LLMErrorPayload | undefined = finalDone.llm_error ?? undefined
-        const idx = messages.value.length
-        messages.value.push({ role: 'err', text: finalDone.error, llmError: llmErr })
-        if (llmErr?.is_llm_error) {
-          pendingLLMError.value = { messageIndex: idx, payload: llmErr, originalText: text }
-        }
-      }
-      if (finalDone && finalDone.reply) {
-        messages.value.push({ role: 'bot', text: finalDone.reply })
       }
     } catch (e: any) {
-      if (e?.name === 'AbortError') {
-        status.value = ''
-        return
-      }
+      if (e?.name === 'AbortError') { status.value = ''; return }
       status.value = ''
+      if (streamingBotIndex.value !== -1) {
+        messages.value.splice(streamingBotIndex.value, 1)
+        streamingBotIndex.value = -1
+      }
       messages.value.push({ role: 'err', text: String(e) })
     } finally {
       activeController.value = null
+    }
+  }
+
+  async function _sendWS(text: string) {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${location.host}/ws/chat/live`
+
+    await new Promise<void>((resolve) => {
+      const ws = new WebSocket(wsUrl)
+      _activeWs = ws
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ message: text, session_id: sessionId.value }))
+      }
+
+      ws.onmessage = (ev) => {
+        let obj: any
+        try { obj = JSON.parse(ev.data) } catch { return }
+        const { done: streamDone } = _handleStreamEvent(obj, text)
+        if (streamDone) ws.close()
+      }
+
+      ws.onerror = () => {
+        status.value = ''
+        if (streamingBotIndex.value !== -1) {
+          messages.value.splice(streamingBotIndex.value, 1)
+          streamingBotIndex.value = -1
+        }
+        messages.value.push({ role: 'err', text: 'WebSocket error' })
+        resolve()
+      }
+
+      ws.onclose = () => {
+        _activeWs = null
+        resolve()
+      }
+    })
+  }
+
+  async function sendMessage(text: string) {
+    if (!text.trim() || isLoading.value) return
+
+    messages.value.push({ role: 'user', text })
+    isLoading.value = true
+    status.value = ''
+    pendingLLMError.value = null
+    streamingBotIndex.value = -1
+
+    try {
+      if (transport.value === 'ws' && typeof WebSocket !== 'undefined') {
+        await _sendWS(text)
+      } else {
+        await _sendSSE(text)
+      }
+    } finally {
+      streamingBotIndex.value = -1
+      status.value = ''
       isLoading.value = false
     }
   }
@@ -170,6 +262,11 @@ export const useChatStore = defineStore('chat', () => {
     const sid = sessionId.value
     activeController.value?.abort()
     activeController.value = null
+    if (_activeWs) {
+      _activeWs.close()
+      _activeWs = null
+    }
+    streamingBotIndex.value = -1
     isLoading.value = false
     try {
       if (sid) {
@@ -423,6 +520,8 @@ export const useChatStore = defineStore('chat', () => {
     status,
     isLoading,
     pendingLLMError,
+    streamingBotIndex,
+    transport,
     versions,
     activeVersionId,
     availableProfiles,

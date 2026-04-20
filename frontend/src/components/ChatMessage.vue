@@ -10,6 +10,7 @@ const props = defineProps<{
   text: string
   llmError?: LLMErrorPayload
   showActions?: boolean
+  streaming?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -23,7 +24,9 @@ const md = new MarkdownIt({
 })
 
 const renderedText = computed(() => {
-  if (props.role === 'bot') return md.render(props.text)
+  // Don't run markdown while streaming – the text may be mid-token and
+  // produce broken HTML; switch to rendered output only when done.
+  if (props.role === 'bot' && !props.streaming) return md.render(props.text)
   return props.text
 })
 
@@ -63,7 +66,14 @@ const roleLabel = computed(() => {
     <div class="msg-bubble">
       <div class="msg-label">{{ roleLabel }}</div>
 
-      <div v-if="role === 'bot'" class="bubble-bot prose-content" v-html="renderedText"></div>
+      <div
+        v-if="role === 'bot'"
+        class="bubble-bot prose-content"
+        :class="{ 'bubble-bot--streaming': streaming }"
+      >
+        <span v-if="streaming" class="stream-text">{{ text }}</span>
+        <span v-else v-html="renderedText"></span>
+      </div>
       <div v-else-if="role === 'err'" class="bubble-err">
         <span>{{ text }}</span>
         <div v-if="llmError?.is_llm_error && showActions" class="err-actions">
@@ -231,6 +241,27 @@ const roleLabel = computed(() => {
   color: var(--text);
   line-height: 1.65;
   word-break: break-words;
+}
+
+/* ── Streaming state ─────────────────────────────────── */
+.stream-text {
+  white-space: pre-wrap;
+  word-break: break-words;
+}
+
+.bubble-bot--streaming::after {
+  content: '▍';
+  display: inline-block;
+  color: var(--accent);
+  opacity: 0.85;
+  animation: cursor-blink 0.65s step-end infinite;
+  margin-left: 1px;
+  font-size: 0.9em;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 0.85; }
+  50%       { opacity: 0; }
 }
 
 /* ── Thought avatar ──────────────────────────────────── */

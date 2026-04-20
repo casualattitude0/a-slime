@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Callable
 
@@ -566,6 +567,136 @@ def invoke_executor(
         return executor.invoke(payload, config={"callbacks": cb})
     finally:
         set_invocation_status_sink(None)
+
+
+def _tool_name_to_status(name: str) -> tuple[str, str]:
+    """Map a LangChain tool name to a (phase, label) pair for UI status events."""
+    _map = {
+        "document_search": ("reading", "調閱文件"),
+        "web_search": ("searching", "搜尋網路"),
+        "web_fetch": ("fetching", "擷取網頁"),
+        "search_memory": ("memory", "查詢記憶"),
+        "save_to_memory": ("memory", "儲存記憶"),
+        "ask_reasoning_model": ("reasoning", "深度推理"),
+    }
+    return _map.get(name, ("working", name))
+
+
+def _chunk_to_text(chunk: Any) -> str:
+    """Extract plain text from an AIMessageChunk (ignores tool-call chunks)."""
+    if chunk is None:
+        return ""
+    content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text":
+                t = p.get("text", "")
+                if isinstance(t, str):
+                    parts.append(t)
+        return "".join(parts)
+    return ""
+
+
+async def astream_executor(
+    executor: Any,
+    payload: dict[str, Any],
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Async generator that streams events from the executor.
+
+    Yields dicts with ``event`` key:
+      - ``status``   – ``{phase, label}`` UI hint
+      - ``delta``    – ``{text}`` incremental output token
+      - ``_done``    – ``{output}`` raw executor output dict (terminal, internal)
+      - ``_error``   – ``{exc}`` exception (terminal, internal)
+      - ``_cancelled`` – cancelled by caller (terminal, internal)
+
+    Terminal ``_*`` events are consumed by the web layer; clients only see
+    ``status``, ``delta``, ``done``, and ``error`` frames.
+    """
+    import asyncio
+
+    # Resolve the inner AgentExecutor and optional retriever from _PrefetchExecutor.
+    if isinstance(executor, _PrefetchExecutor):
+        inner_exec = object.__getattribute__(executor, "_executor")
+        retriever = object.__getattribute__(executor, "_retriever")
+    else:
+        inner_exec = executor
+        retriever = None
+
+    run_payload = dict(payload)
+
+    # RAG prefetch (same logic as _PrefetchExecutor.invoke).
+    if (
+        _prefetch_rag_into_input_enabled()
+        and retriever is not None
+        and isinstance(run_payload.get("input"), str)
+        and run_payload["input"].strip()
+    ):
+        q = run_payload["input"].strip()
+        yield {"event": "status", "phase": "reading", "label": "調閱文件"}
+        docs = await asyncio.to_thread(retriever.invoke, q)
+        if docs:
+            ctx = "\n\n".join(d.page_content for d in docs)
+            run_payload["input"] = (
+                f"{run_payload['input']}\n\n---\n"
+                "[Embedded local documents — answer from this text when it applies; "
+                "say if something is not covered here.]\n"
+                f"{ctx}"
+            )
+
+    # executor_run_id is set on the first on_chain_start for the AgentExecutor,
+    # so we can capture its on_chain_end output later.
+    executor_run_id: str | None = None
+    final_output: dict[str, Any] = {}
+    seen_thinking = False
+
+    try:
+        async for ev in inner_exec.astream_events(run_payload, version="v2"):
+            if cancel_check is not None and cancel_check():
+                yield {"event": "_cancelled"}
+                return
+
+            ev_name: str = ev.get("event", "")
+            run_id: str = ev.get("run_id", "")
+
+            if ev_name == "on_chain_start":
+                # Identify the root AgentExecutor run.
+                if executor_run_id is None and not ev.get("parent_ids"):
+                    executor_run_id = run_id
+                if not seen_thinking:
+                    seen_thinking = True
+                    yield {"event": "status", "phase": "thinking", "label": "思考"}
+
+            elif ev_name == "on_chain_end":
+                # Capture the AgentExecutor's final output dict.
+                if run_id == executor_run_id:
+                    output_data = (ev.get("data") or {}).get("output")
+                    if isinstance(output_data, dict):
+                        final_output = output_data
+
+            elif ev_name == "on_chat_model_start":
+                yield {"event": "status", "phase": "reasoning", "label": "推理"}
+
+            elif ev_name == "on_tool_start":
+                tool_name = ev.get("name") or ""
+                phase, label = _tool_name_to_status(tool_name)
+                yield {"event": "status", "phase": phase, "label": label}
+
+            elif ev_name == "on_chat_model_stream":
+                chunk = (ev.get("data") or {}).get("chunk")
+                text = _chunk_to_text(chunk)
+                if text:
+                    yield {"event": "delta", "text": text}
+
+        yield {"event": "_done", "output": final_output}
+
+    except Exception as exc:
+        yield {"event": "_error", "exc": exc}
 
 
 def _blocks_to_plain_text(parts: Any) -> str:

@@ -4,16 +4,16 @@ import asyncio
 import ast
 import json
 import os
-import queue
 import re
 import threading
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from src.agent import (
     LLMErrorInfo,
+    astream_executor,
     build_executor,
     classify_llm_error,
     delete_all_rag_items,
@@ -369,12 +370,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
         return ChatResponse(reply=reply, session_id=sid, error=err)
 
 
-@app.post("/api/chat/stream")
-async def chat_stream(req: ChatRequest):
-    msg = req.message.strip()
-    if not msg:
-        raise HTTPException(status_code=400, detail="Empty message")
+async def _resolve_session(
+    app: FastAPI,
+    req_session_id: str | None,
+    msg: str,
+) -> tuple[str, list[BaseMessage], Any, dict[str, Any] | None, threading.Event]:
+    """Resolve (or create) a session and return the objects needed for streaming.
 
+    Returns (sid, hist_snapshot, executor, payload, cancel_event).
+    ``payload`` is None and ``executor`` is None when a local reply covers the request;
+    in that case ``hist_snapshot`` is the ready-to-use local reply stored as a string
+    under the key ``"local_reply"`` of the returned payload dict.
+    """
     lock: asyncio.Lock = app.state.lock
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
     cancel_events: dict[str, threading.Event] = app.state.cancel_events
@@ -382,8 +389,8 @@ async def chat_stream(req: ChatRequest):
 
     async with lock:
         version = registry.get_active()
-        if req.session_id and req.session_id in sessions:
-            sid = req.session_id
+        if req_session_id and req_session_id in sessions:
+            sid = req_session_id
         elif version.session_id and version.session_id in sessions:
             sid = version.session_id
         else:
@@ -392,146 +399,241 @@ async def chat_stream(req: ChatRequest):
             registry.update_session(version.version_id, sid)
 
         hist = sessions[sid]
+
         cancel_event = cancel_events.get(sid)
         if cancel_event is None:
             cancel_event = threading.Event()
             cancel_events[sid] = cancel_event
         else:
             cancel_event.clear()
+
         local_reply = _simple_local_reply(msg)
         if local_reply is None:
             local_reply = await asyncio.to_thread(local_quick_reply, msg, len(hist))
-        if local_reply is None:
-            history_for_prompt = list(hist)
-            executor = _get_executor(app, version.version_id, msg, len(hist))
-            payload = {"input": msg, "chat_history": history_for_prompt}
-        else:
-            executor = None
-            payload = {}
 
-    if local_reply is not None:
-        async def local_ndjson_gen():
-            async with lock:
-                hist2 = sessions.get(sid, [])
-                hist2.append(HumanMessage(content=msg))
-                hist2.append(AIMessage(content=local_reply))
-                _trim_session(hist2)
-            yield json.dumps(
-                {
-                    "event": "done",
-                    "reply": local_reply,
-                    "session_id": sid,
-                    "error": None,
-                },
-                ensure_ascii=False,
-            ) + "\n"
+        if local_reply is not None:
+            return sid, list(hist), None, {"local_reply": local_reply}, cancel_event
 
-        return StreamingResponse(local_ndjson_gen(), media_type="application/x-ndjson")
+        history_for_prompt = list(hist)
+        executor = _get_executor(app, version.version_id, msg, len(hist))
+        payload = {"input": msg, "chat_history": history_for_prompt}
+        return sid, history_for_prompt, executor, payload, cancel_event
 
-    q: queue.Queue[tuple[str, Any]] = queue.Queue()
-    box: dict[str, Any] = {}
 
-    def worker() -> None:
-        def sink(ev: dict[str, Any]) -> None:
-            if cancel_event.is_set():
-                return
-            q.put(("status", ev))
+async def _stream_pipeline(
+    app: FastAPI,
+    sid: str,
+    msg: str,
+    executor: Any,
+    payload: dict[str, Any],
+    cancel_event: threading.Event,
+) -> AsyncIterator[dict[str, Any]]:
+    """Shared async generator yielding client-visible event dicts.
 
-        try:
-            box["result"] = invoke_executor(executor, payload, status_sink=sink)
-        except Exception as exc:
-            box["error"] = exc
-        finally:
-            q.put(("finished", None))
+    Event shapes:
+      {"event": "start",  "session_id": sid, "request_id": rid}
+      {"event": "status", "phase": str, "label": str}
+      {"event": "delta",  "text": str}
+      {"event": "done",   "reply": str, "session_id": sid,
+                          "terminated": bool, "error": str|None, "llm_error": dict|None}
+    """
+    lock: asyncio.Lock = app.state.lock
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    request_id = str(uuid.uuid4())
+    yield {"event": "start", "session_id": sid, "request_id": request_id}
 
-    threading.Thread(target=worker, daemon=True).start()
+    reply = ""
+    err: str | None = None
+    llm_error_payload: dict | None = None
+    terminated = False
 
-    async def ndjson_gen():
-        finished = False
-        terminated = False
-        while not finished:
-            if cancel_event.is_set():
-                terminated = True
-                break
-            await asyncio.sleep(0.02)
-            try:
-                while True:
-                    kind, data = q.get_nowait()
-                    if kind == "finished":
-                        finished = True
-                        break
-                    if kind == "status" and isinstance(data, dict):
-                        if cancel_event.is_set():
-                            terminated = True
-                            break
-                        yield json.dumps(
-                            {
-                                "event": "status",
-                                "phase": data.get("phase", ""),
-                                "label": data.get("label", ""),
-                            },
-                            ensure_ascii=False,
-                        ) + "\n"
-            except queue.Empty:
-                continue
+    async for ev in astream_executor(
+        executor,
+        payload,
+        cancel_check=cancel_event.is_set,
+    ):
+        ev_name = ev.get("event", "")
 
-        if terminated:
-            async with lock:
-                hist2 = sessions.get(sid, [])
-                hist2.append(HumanMessage(content=msg))
-                _trim_session(hist2)
-            yield json.dumps(
-                {
-                    "event": "done",
-                    "reply": "",
-                    "session_id": sid,
-                    "error": None,
-                    "llm_error": None,
-                    "terminated": True,
-                },
-                ensure_ascii=False,
-            ) + "\n"
-            return
+        if ev_name == "_cancelled":
+            terminated = True
+            break
 
-        err: str | None = None
-        reply = ""
-        llm_error_payload: dict | None = None
-        exc = box.get("error")
-        if exc is not None:
+        if ev_name == "_error":
+            exc = ev["exc"]
             err_info = classify_llm_error(exc)
             if err_info.is_llm_error:
                 err = err_info.message
                 llm_error_payload = err_info.to_dict()
             else:
                 err = str(exc)
-        else:
-            result = box.get("result") or {}
-            out = result.get("output")
-            reply = normalize_agent_output(out)
-            if not reply:
-                err = f"No text output; full result: {result!r}"
-            else:
-                err = None
+            break
 
-        async with lock:
-            hist2 = sessions.get(sid, [])
+        if ev_name == "_done":
+            raw_output = ev.get("output") or {}
+            out = raw_output.get("output") if isinstance(raw_output, dict) else None
+            reply = normalize_agent_output(out) if out is not None else reply
+            if not reply:
+                err = f"No text output; full result: {raw_output!r}"
+            break
+
+        if ev_name == "delta":
+            reply += ev.get("text", "")
+
+        yield ev  # forward status and delta to client
+
+    async with lock:
+        hist2 = sessions.get(sid, [])
+        if terminated:
+            hist2.append(HumanMessage(content=msg))
+        else:
             hist2.append(HumanMessage(content=msg))
             hist2.append(AIMessage(content=reply if reply else err or ""))
-            _trim_session(hist2)
+        _trim_session(hist2)
 
-        yield json.dumps(
-            {
-                "event": "done",
-                "reply": reply,
-                "session_id": sid,
-                "error": err,
-                "llm_error": llm_error_payload,
-                "terminated": False,
-            },
-            ensure_ascii=False,
-        ) + "\n"
+    yield {
+        "event": "done",
+        "reply": reply,
+        "session_id": sid,
+        "terminated": terminated,
+        "error": err,
+        "llm_error": llm_error_payload,
+    }
 
-    return StreamingResponse(ndjson_gen(), media_type="application/x-ndjson")
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    msg = req.message.strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    sid, _hist, executor, payload, cancel_event = await _resolve_session(
+        app, req.session_id, msg
+    )
+
+    # Fast local reply path.
+    if executor is None:
+        local_reply: str = payload["local_reply"]  # type: ignore[index]
+
+        async def _local_gen():
+            lock: asyncio.Lock = app.state.lock
+            sessions: dict[str, list[BaseMessage]] = app.state.sessions
+            async with lock:
+                hist2 = sessions.get(sid, [])
+                hist2.append(HumanMessage(content=msg))
+                hist2.append(AIMessage(content=local_reply))
+                _trim_session(hist2)
+            yield (
+                json.dumps(
+                    {
+                        "event": "done",
+                        "reply": local_reply,
+                        "session_id": sid,
+                        "terminated": False,
+                        "error": None,
+                        "llm_error": None,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+        return StreamingResponse(_local_gen(), media_type="application/x-ndjson")
+
+    async def _ndjson_gen():
+        async for ev in _stream_pipeline(app, sid, msg, executor, payload, cancel_event):
+            yield json.dumps(ev, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(_ndjson_gen(), media_type="application/x-ndjson")
+
+
+@app.websocket("/ws/chat/live")
+async def ws_chat_live(websocket: WebSocket):
+    """WebSocket live chat endpoint.
+
+    Client sends: ``{"message": str, "session_id": str|null}``
+    Server sends JSON frames with the same event schema as /api/chat/stream.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_text(
+                    json.dumps({"event": "error", "error": "Invalid JSON"}, ensure_ascii=False)
+                )
+                continue
+
+            msg: str = (data.get("message") or "").strip()
+            if not msg:
+                await websocket.send_text(
+                    json.dumps(
+                        {"event": "error", "error": "Empty message"}, ensure_ascii=False
+                    )
+                )
+                continue
+
+            req_session_id: str | None = data.get("session_id") or None
+
+            try:
+                sid, _hist, executor, payload, cancel_event = await _resolve_session(
+                    app, req_session_id, msg
+                )
+            except Exception as exc:
+                await websocket.send_text(
+                    json.dumps({"event": "error", "error": str(exc)}, ensure_ascii=False)
+                )
+                continue
+
+            # Fast local reply path.
+            if executor is None:
+                local_reply: str = payload["local_reply"]  # type: ignore[index]
+                lock: asyncio.Lock = app.state.lock
+                sessions: dict[str, list[BaseMessage]] = app.state.sessions
+                async with lock:
+                    hist2 = sessions.get(sid, [])
+                    hist2.append(HumanMessage(content=msg))
+                    hist2.append(AIMessage(content=local_reply))
+                    _trim_session(hist2)
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "event": "done",
+                            "reply": local_reply,
+                            "session_id": sid,
+                            "terminated": False,
+                            "error": None,
+                            "llm_error": None,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+
+            try:
+                async for ev in _stream_pipeline(
+                    app, sid, msg, executor, payload, cancel_event
+                ):
+                    await websocket.send_text(json.dumps(ev, ensure_ascii=False))
+            except WebSocketDisconnect:
+                break
+            except Exception as exc:
+                try:
+                    await websocket.send_text(
+                        json.dumps(
+                            {"event": "error", "error": str(exc)}, ensure_ascii=False
+                        )
+                    )
+                except Exception:
+                    pass
+
+    except WebSocketDisconnect:
+        pass
 
 
 @app.post("/api/chat/fallback", response_model=ChatResponse)

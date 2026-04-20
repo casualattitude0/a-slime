@@ -9,7 +9,11 @@ import MemoryPanel from './MemoryPanel.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 
 const chatStore = useChatStore()
-const { messages, status, isLoading, activeVersionId, versions, pendingLLMError } = storeToRefs(chatStore)
+const { messages, status, isLoading, activeVersionId, versions, pendingLLMError, streamingBotIndex, transport } = storeToRefs(chatStore)
+
+const toggleTransport = () => {
+  transport.value = transport.value === 'ws' ? 'sse' : 'ws'
+}
 const logRef = ref<HTMLElement | null>(null)
 const showPanel = ref(false)
 
@@ -65,6 +69,16 @@ const activeVersionName = () => {
 
       <div class="flex items-center gap-1">
         <button
+          @click="toggleTransport"
+          class="cmd-btn transport-toggle"
+          :class="transport === 'ws' ? 'cmd-btn--active' : ''"
+          :title="transport === 'ws' ? 'Live (WebSocket) — click to switch to SSE' : 'SSE — click to switch to WebSocket'"
+          :disabled="isLoading"
+        >
+          <span class="transport-dot" :class="transport === 'ws' ? 'transport-dot--ws' : 'transport-dot--sse'"></span>
+          <span class="cmd-btn-label">{{ transport === 'ws' ? 'Live' : 'SSE' }}</span>
+        </button>
+        <button
           @click="showPanel = !showPanel"
           class="cmd-btn"
           :class="showPanel ? 'cmd-btn--active' : ''"
@@ -112,6 +126,7 @@ const activeVersionName = () => {
               :text="msg.text"
               :llm-error="msg.llmError"
               :show-actions="pendingLLMError?.messageIndex === i"
+              :streaming="streamingBotIndex === i"
               @fix-issue="chatStore.fixIssue()"
               @answer-immediately="chatStore.answerImmediately()"
             />
@@ -263,6 +278,29 @@ const activeVersionName = () => {
 .cmd-btn:disabled {
   opacity: 0.38;
   cursor: not-allowed;
+}
+
+/* ── Transport toggle ─────────────────────────────────── */
+.transport-toggle {
+  gap: 6px;
+}
+
+.transport-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.transport-dot--ws {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+.transport-dot--sse {
+  background: rgba(255, 200, 100, 0.7);
 }
 
 /* ── Body ────────────────────────────────────────────── */
