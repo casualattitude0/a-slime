@@ -69,9 +69,8 @@ const roleLabel = computed(() => {
       <div
         v-if="role === 'bot'"
         class="bubble-bot prose-content"
-        :class="{ 'bubble-bot--streaming': streaming }"
       >
-        <span v-if="streaming" class="stream-text">{{ text }}</span>
+        <span v-if="streaming">{{ text }}</span>
         <span v-else v-html="renderedText"></span>
       </div>
       <div v-else-if="role === 'err'" class="bubble-err">
@@ -241,27 +240,6 @@ const roleLabel = computed(() => {
   color: var(--text);
   line-height: 1.65;
   word-break: break-words;
-}
-
-/* ── Streaming state ─────────────────────────────────── */
-.stream-text {
-  white-space: pre-wrap;
-  word-break: break-words;
-}
-
-.bubble-bot--streaming::after {
-  content: '▍';
-  display: inline-block;
-  color: var(--accent);
-  opacity: 0.85;
-  animation: cursor-blink 0.65s step-end infinite;
-  margin-left: 1px;
-  font-size: 0.9em;
-}
-
-@keyframes cursor-blink {
-  0%, 100% { opacity: 0.85; }
-  50%       { opacity: 0; }
 }
 
 /* ── Thought avatar ──────────────────────────────────── */

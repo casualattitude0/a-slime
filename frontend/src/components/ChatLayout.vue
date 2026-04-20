@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Trash2, Loader2, Database } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
@@ -9,13 +9,14 @@ import MemoryPanel from './MemoryPanel.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 
 const chatStore = useChatStore()
-const { messages, status, isLoading, activeVersionId, versions, pendingLLMError, streamingBotIndex, transport } = storeToRefs(chatStore)
+const { messages, status, streamingReply, isLoading, activeVersionId, versions, pendingLLMError, streamingBotIndex, transport } = storeToRefs(chatStore)
 
 const toggleTransport = () => {
   transport.value = transport.value === 'ws' ? 'sse' : 'ws'
 }
 const logRef = ref<HTMLElement | null>(null)
 const showPanel = ref(false)
+const heroThinkingText = computed(() => streamingReply.value || status.value || "AI's thinking")
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -102,23 +103,9 @@ const activeVersionName = () => {
     <div class="body-row">
       <!-- Message Canvas -->
       <main class="chat-canvas">
-        <!-- Hero banner — always visible -->
-        <div class="hero-banner">
-          <div class="hero-activity">
-            <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
-            <span class="hero-activity-text">{{ status || 'Idle · Waiting for input' }}</span>
-          </div>
-          <div class="hero-avatar-wrap">
-            <img :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
-            <div class="hero-avatar-ring"></div>
-          </div>
-          <p class="hero-name">LOCAL AGENT</p>
-          <p v-if="messages.length === 0" class="hero-sub">Send a message to begin</p>
-        </div>
-
         <!-- Scrollable messages area -->
         <div ref="logRef" class="messages-scroll">
-          <div v-if="messages.length > 0" class="messages-inner">
+          <div class="messages-inner">
             <ChatMessage
               v-for="(msg, i) in messages"
               :key="i"
@@ -146,6 +133,18 @@ const activeVersionName = () => {
     <!-- Composer Footer -->
     <footer class="composer-footer">
       <div class="composer-inner">
+        <!-- Hero banner -->
+        <div class="hero-banner">
+          <div v-if="isLoading" class="hero-thinking-bubble">{{ heroThinkingText }}</div>
+          <div class="hero-activity">
+            <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
+          </div>
+          <div class="hero-avatar-wrap">
+            <img :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
+            <div class="hero-avatar-ring"></div>
+          </div>
+        </div>
+
         <!-- Status strip -->
         <div class="status-strip" :class="(status || isLoading) ? '' : 'status-strip--hidden'">
           <Loader2 :size="11" class="spin-icon" />
@@ -339,23 +338,19 @@ const activeVersionName = () => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 28px 20px 20px;
+  padding: 10px 20px 8px;
   gap: 0;
   user-select: none;
-  border-bottom: 1px solid var(--border);
-  background: rgba(17, 19, 24, 0.5);
+  border-top: 1px solid var(--border);
+  margin-bottom: 8px;
+  background: transparent;
 }
 
 .hero-activity {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-bottom: 14px;
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-  letter-spacing: 0.07em;
-  color: var(--accent);
-  opacity: 0.75;
+  gap: 0;
+  margin-bottom: 8px;
 }
 
 .hero-activity-dot {
@@ -377,43 +372,41 @@ const activeVersionName = () => {
   position: relative;
   width: 80px;
   height: 80px;
-  margin-bottom: 14px;
+  margin-bottom: 4px;
 }
 
 .hero-avatar {
   width: 80px;
   height: 80px;
-  border-radius: 22px;
-  object-fit: cover;
+  border-radius: 0;
+  object-fit: contain;
   border: 1px solid rgba(0, 229, 255, 0.22);
   box-shadow: 0 0 24px rgba(0, 229, 255, 0.1), 0 4px 20px rgba(0, 0, 0, 0.45);
   position: relative;
   z-index: 1;
+  background: transparent;
 }
 
 .hero-avatar-ring {
-  position: absolute;
-  inset: -6px;
-  border-radius: 28px;
-  border: 1px solid rgba(0, 229, 255, 0.1);
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
-.hero-name {
+.hero-thinking-bubble {
+  margin-bottom: 8px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(160, 100, 255, 0.3);
+  background: rgba(140, 80, 255, 0.08);
+  color: rgba(206, 180, 255, 0.95);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: var(--text);
   font-family: ui-monospace, monospace;
-  margin: 0 0 4px;
+  line-height: 1.2;
+  animation: hero-think-pulse 1s ease-in-out infinite;
 }
 
-.hero-sub {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin: 0;
-  letter-spacing: 0.02em;
+@keyframes hero-think-pulse {
+  0%, 100% { opacity: 0.78; }
+  50% { opacity: 1; }
 }
 
 /* ── Floating memory panel ───────────────────────────── */

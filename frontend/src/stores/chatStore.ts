@@ -41,6 +41,7 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
   const sessionId = ref<string | null>(localStorage.getItem('agent_session_id'))
   const status = ref<string>('')
+  const streamingReply = ref<string>('')
   const isLoading = ref<boolean>(false)
   const pendingLLMError = ref<{ messageIndex: number; payload: LLMErrorPayload; originalText: string } | null>(null)
 
@@ -55,7 +56,7 @@ export const useChatStore = defineStore('chat', () => {
   const ragLoading = ref<boolean>(false)
   const activeController = ref<AbortController | null>(null)
 
-  // Index of the bot message currently being streamed (-1 = none).
+  // Legacy streaming marker kept for compatibility with message components.
   const streamingBotIndex = ref<number>(-1)
   // Preferred transport: 'sse' | 'ws'
   const transport = ref<'sse' | 'ws'>('ws')
@@ -79,20 +80,10 @@ export const useChatStore = defineStore('chat', () => {
 
     if (obj.event === 'status' && obj.label) {
       status.value = String(obj.label)
-      // Insert thought bubbles only while the bot hasn't started replying yet.
-      if (streamingBotIndex.value === -1) {
-        messages.value.push({ role: 'thought', text: String(obj.label) })
-      }
     }
 
     if (obj.event === 'delta' && obj.text) {
-      if (streamingBotIndex.value === -1) {
-        // First delta: push a live bot message placeholder.
-        streamingBotIndex.value = messages.value.length
-        messages.value.push({ role: 'bot', text: String(obj.text) })
-      } else {
-        messages.value[streamingBotIndex.value].text += String(obj.text)
-      }
+      streamingReply.value += String(obj.text)
     }
 
     if (obj.event === 'done') {
@@ -101,15 +92,13 @@ export const useChatStore = defineStore('chat', () => {
 
       if (obj.terminated) {
         streamingBotIndex.value = -1
+        streamingReply.value = ''
         return { done: true }
       }
 
       if (obj.error) {
-        // Remove any partial bot message that was being built.
-        if (streamingBotIndex.value !== -1) {
-          messages.value.splice(streamingBotIndex.value, 1)
-          streamingBotIndex.value = -1
-        }
+        streamingBotIndex.value = -1
+        streamingReply.value = ''
         const llmErr: LLMErrorPayload | undefined = obj.llm_error ?? undefined
         const idx = messages.value.length
         messages.value.push({ role: 'err', text: obj.error, llmError: llmErr })
@@ -117,23 +106,17 @@ export const useChatStore = defineStore('chat', () => {
           pendingLLMError.value = { messageIndex: idx, payload: llmErr, originalText }
         }
       } else if (obj.reply) {
-        if (streamingBotIndex.value !== -1) {
-          // Replace the streaming placeholder with the authoritative final text.
-          messages.value[streamingBotIndex.value].text = obj.reply
-        } else {
-          messages.value.push({ role: 'bot', text: obj.reply })
-        }
+        messages.value.push({ role: 'bot', text: obj.reply })
       }
       streamingBotIndex.value = -1
+      streamingReply.value = ''
       return { done: true }
     }
 
     if (obj.event === 'error') {
       status.value = ''
-      if (streamingBotIndex.value !== -1) {
-        messages.value.splice(streamingBotIndex.value, 1)
-        streamingBotIndex.value = -1
-      }
+      streamingBotIndex.value = -1
+      streamingReply.value = ''
       messages.value.push({ role: 'err', text: obj.error || 'Stream error' })
       return { done: true }
     }
@@ -188,10 +171,8 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e: any) {
       if (e?.name === 'AbortError') { status.value = ''; return }
       status.value = ''
-      if (streamingBotIndex.value !== -1) {
-        messages.value.splice(streamingBotIndex.value, 1)
-        streamingBotIndex.value = -1
-      }
+      streamingBotIndex.value = -1
+      streamingReply.value = ''
       messages.value.push({ role: 'err', text: String(e) })
     } finally {
       activeController.value = null
@@ -219,10 +200,8 @@ export const useChatStore = defineStore('chat', () => {
 
       ws.onerror = () => {
         status.value = ''
-        if (streamingBotIndex.value !== -1) {
-          messages.value.splice(streamingBotIndex.value, 1)
-          streamingBotIndex.value = -1
-        }
+        streamingBotIndex.value = -1
+        streamingReply.value = ''
         messages.value.push({ role: 'err', text: 'WebSocket error' })
         resolve()
       }
@@ -242,6 +221,7 @@ export const useChatStore = defineStore('chat', () => {
     status.value = ''
     pendingLLMError.value = null
     streamingBotIndex.value = -1
+    streamingReply.value = ''
 
     try {
       if (transport.value === 'ws' && typeof WebSocket !== 'undefined') {
@@ -251,6 +231,7 @@ export const useChatStore = defineStore('chat', () => {
       }
     } finally {
       streamingBotIndex.value = -1
+      streamingReply.value = ''
       status.value = ''
       isLoading.value = false
     }
@@ -267,6 +248,7 @@ export const useChatStore = defineStore('chat', () => {
       _activeWs = null
     }
     streamingBotIndex.value = -1
+    streamingReply.value = ''
     isLoading.value = false
     try {
       if (sid) {
@@ -518,6 +500,7 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     sessionId,
     status,
+    streamingReply,
     isLoading,
     pendingLLMError,
     streamingBotIndex,
