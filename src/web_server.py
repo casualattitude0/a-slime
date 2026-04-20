@@ -35,6 +35,14 @@ from src.agent import (
     normalize_agent_output,
     should_escalate_to_gemini,
 )
+from src.chat_registry import ChatRegistry
+from src.history_store import (
+    append_message,
+    clear_session_messages,
+    get_session_messages_as_dicts,
+    load_session_messages,
+    trim_session_messages,
+)
 from src.tools import (
     delete_all_memory_items,
     delete_memory_item,
@@ -45,6 +53,7 @@ from src.version_registry import VersionRegistry
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "frontend" / "dist"
 _REGISTRY_PATH = _ROOT / "version_registry.json"
+_CHAT_REGISTRY_PATH = _ROOT / "chat_registry.json"
 
 _MAX_SESSION_MESSAGES = 40
 
@@ -53,6 +62,40 @@ def _trim_session(msgs: list[BaseMessage]) -> None:
     if len(msgs) <= _MAX_SESSION_MESSAGES:
         return
     del msgs[: len(msgs) - _MAX_SESSION_MESSAGES]
+
+
+def _persist_message(app: FastAPI, sid: str, msg: BaseMessage, version_id: str | None = None) -> None:
+    """Append a message to the Chroma history store asynchronously-safe (sync call)."""
+    try:
+        append_message(
+            app.state.chroma_dir,
+            app.state.embeddings,
+            sid,
+            msg,
+            version_id=version_id,
+        )
+    except Exception:
+        pass
+
+
+def _persist_trim(app: FastAPI, sid: str) -> None:
+    try:
+        trim_session_messages(
+            app.state.chroma_dir,
+            app.state.embeddings,
+            sid,
+            _MAX_SESSION_MESSAGES,
+        )
+    except Exception:
+        pass
+
+
+def _load_session_from_store(app: FastAPI, sid: str) -> list[BaseMessage]:
+    """Load persisted messages from Chroma for a given session_id."""
+    try:
+        return load_session_messages(app.state.chroma_dir, app.state.embeddings, sid)
+    except Exception:
+        return []
 
 
 def _safe_eval_math(expr: str) -> str | None:
@@ -260,6 +303,7 @@ async def _lifespan(app: FastAPI):
     app.state.chroma_dir.mkdir(parents=True, exist_ok=True)
 
     app.state.version_registry = VersionRegistry(_REGISTRY_PATH)
+    app.state.chat_registry = ChatRegistry(_CHAT_REGISTRY_PATH)
     app.state.executor_cache: dict[str, Any] = {}
     app.state.available_profiles = _available_model_profiles()
 
@@ -282,6 +326,21 @@ async def _lifespan(app: FastAPI):
     app.state.sessions: dict[str, list[BaseMessage]] = {}
     app.state.cancel_events: dict[str, threading.Event] = {}
     app.state.lock = asyncio.Lock()
+
+    # Restore persisted sessions from Chroma and adopt into chat registry.
+    registry_for_restore: VersionRegistry = app.state.version_registry
+    chat_reg: ChatRegistry = app.state.chat_registry
+    for vd in registry_for_restore.list_versions():
+        vsid = vd.get("session_id")
+        vid = vd.get("version_id", "")
+        if vsid:
+            if vsid not in app.state.sessions:
+                msgs = load_session_messages(app.state.chroma_dir, app.state.embeddings, vsid)
+                if msgs:
+                    app.state.sessions[vsid] = msgs
+            # Ensure chat registry has an entry for this session.
+            chat_reg.ensure(vsid, vid)
+
     yield
 
 
@@ -317,20 +376,27 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     async with lock:
         version = registry.get_active()
+        chat_reg_c: ChatRegistry = app.state.chat_registry
         sid: str
         if req.session_id and req.session_id in sessions:
             sid = req.session_id
         elif version.session_id and version.session_id in sessions:
             sid = version.session_id
         else:
-            sid = str(uuid.uuid4())
-            sessions[sid] = []
+            if version.session_id:
+                sid = version.session_id
+                restored = _load_session_from_store(app, sid)
+            else:
+                sid = str(uuid.uuid4())
+                restored = []
+            sessions[sid] = restored
             registry.update_session(version.version_id, sid)
+            chat_reg_c.ensure(sid, version.version_id)
 
         hist = sessions[sid]
         local_reply = _simple_local_reply(msg)
         if local_reply is None:
-            local_reply = await asyncio.to_thread(local_quick_reply, msg, len(hist))
+            local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
         if local_reply is not None:
             reply = local_reply
             err = None
@@ -348,9 +414,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
             except Exception as exc:
                 llm_err_info = classify_llm_error(exc)
                 if llm_err_info.is_llm_error:
-                    hist.append(HumanMessage(content=msg))
-                    hist.append(AIMessage(content=""))
+                    human_msg = HumanMessage(content=msg)
+                    ai_msg = AIMessage(content="")
+                    hist.append(human_msg)
+                    hist.append(ai_msg)
                     _trim_session(hist)
+                    await asyncio.to_thread(_persist_message, app, sid, human_msg, version.version_id)
+                    await asyncio.to_thread(_persist_message, app, sid, ai_msg, version.version_id)
+                    await asyncio.to_thread(_persist_trim, app, sid)
                     return ChatResponse(
                         reply="",
                         session_id=sid,
@@ -363,9 +434,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
             reply = normalize_agent_output(out)
             err = None if reply else f"No text output; full result: {result!r}"
 
-        hist.append(HumanMessage(content=msg))
-        hist.append(AIMessage(content=reply if reply else err or ""))
+        human_msg = HumanMessage(content=msg)
+        ai_msg = AIMessage(content=reply if reply else err or "")
+        hist.append(human_msg)
+        hist.append(ai_msg)
         _trim_session(hist)
+        await asyncio.to_thread(_persist_message, app, sid, human_msg, version.version_id)
+        await asyncio.to_thread(_persist_message, app, sid, ai_msg, version.version_id)
+        await asyncio.to_thread(_persist_trim, app, sid)
+        # Auto-title from first user message.
+        await asyncio.to_thread(chat_reg_c.set_title_if_default, sid, msg)
+        await asyncio.to_thread(chat_reg_c.touch, sid)
 
         return ChatResponse(reply=reply, session_id=sid, error=err)
 
@@ -389,14 +468,26 @@ async def _resolve_session(
 
     async with lock:
         version = registry.get_active()
+        chat_reg_r: ChatRegistry = app.state.chat_registry
         if req_session_id and req_session_id in sessions:
             sid = req_session_id
+        elif req_session_id and not (req_session_id in sessions):
+            # Client passed a known chat_id that isn't loaded yet — restore it.
+            sid = req_session_id
+            sessions[sid] = _load_session_from_store(app, sid)
+            chat_reg_r.ensure(sid, version.version_id)
         elif version.session_id and version.session_id in sessions:
             sid = version.session_id
         else:
-            sid = str(uuid.uuid4())
-            sessions[sid] = []
+            if version.session_id:
+                sid = version.session_id
+                restored = _load_session_from_store(app, sid)
+            else:
+                sid = str(uuid.uuid4())
+                restored = []
+            sessions[sid] = restored
             registry.update_session(version.version_id, sid)
+            chat_reg_r.ensure(sid, version.version_id)
 
         hist = sessions[sid]
 
@@ -409,7 +500,7 @@ async def _resolve_session(
 
         local_reply = _simple_local_reply(msg)
         if local_reply is None:
-            local_reply = await asyncio.to_thread(local_quick_reply, msg, len(hist))
+            local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
 
         if local_reply is not None:
             return sid, list(hist), None, {"local_reply": local_reply}, cancel_event
@@ -441,6 +532,7 @@ async def _stream_pipeline(
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
     request_id = str(uuid.uuid4())
     yield {"event": "start", "session_id": sid, "request_id": request_id}
+    yield {"event": "status", "phase": "route_deciding", "label": "路由決策中"}
 
     reply = ""
     err: str | None = None
@@ -481,14 +573,25 @@ async def _stream_pipeline(
 
         yield ev  # forward status and delta to client
 
+    registry: VersionRegistry = app.state.version_registry
+    chat_reg_p: ChatRegistry = app.state.chat_registry
+    version_id_for_history = (registry.get_active() or registry.get_active()).version_id
+
+    yield {"event": "status", "phase": "history_persisting", "label": "儲存對話紀錄"}
+
     async with lock:
         hist2 = sessions.get(sid, [])
-        if terminated:
-            hist2.append(HumanMessage(content=msg))
-        else:
-            hist2.append(HumanMessage(content=msg))
-            hist2.append(AIMessage(content=reply if reply else err or ""))
+        human_msg = HumanMessage(content=msg)
+        hist2.append(human_msg)
+        await asyncio.to_thread(_persist_message, app, sid, human_msg, version_id_for_history)
+        if not terminated:
+            ai_msg = AIMessage(content=reply if reply else err or "")
+            hist2.append(ai_msg)
+            await asyncio.to_thread(_persist_message, app, sid, ai_msg, version_id_for_history)
         _trim_session(hist2)
+        await asyncio.to_thread(_persist_trim, app, sid)
+        await asyncio.to_thread(chat_reg_p.set_title_if_default, sid, msg)
+        await asyncio.to_thread(chat_reg_p.touch, sid)
 
     yield {
         "event": "done",
@@ -517,11 +620,18 @@ async def chat_stream(req: ChatRequest):
         async def _local_gen():
             lock: asyncio.Lock = app.state.lock
             sessions: dict[str, list[BaseMessage]] = app.state.sessions
+            registry_lr: VersionRegistry = app.state.version_registry
+            vid_lr = registry_lr.get_active().version_id
             async with lock:
                 hist2 = sessions.get(sid, [])
-                hist2.append(HumanMessage(content=msg))
-                hist2.append(AIMessage(content=local_reply))
+                human_m = HumanMessage(content=msg)
+                ai_m = AIMessage(content=local_reply)
+                hist2.append(human_m)
+                hist2.append(ai_m)
                 _trim_session(hist2)
+                await asyncio.to_thread(_persist_message, app, sid, human_m, vid_lr)
+                await asyncio.to_thread(_persist_message, app, sid, ai_m, vid_lr)
+                await asyncio.to_thread(_persist_trim, app, sid)
             yield (
                 json.dumps(
                     {
@@ -595,11 +705,18 @@ async def ws_chat_live(websocket: WebSocket):
                 local_reply: str = payload["local_reply"]  # type: ignore[index]
                 lock: asyncio.Lock = app.state.lock
                 sessions: dict[str, list[BaseMessage]] = app.state.sessions
+                registry_ws: VersionRegistry = app.state.version_registry
+                vid_ws = registry_ws.get_active().version_id
                 async with lock:
                     hist2 = sessions.get(sid, [])
-                    hist2.append(HumanMessage(content=msg))
-                    hist2.append(AIMessage(content=local_reply))
+                    human_mw = HumanMessage(content=msg)
+                    ai_mw = AIMessage(content=local_reply)
+                    hist2.append(human_mw)
+                    hist2.append(ai_mw)
                     _trim_session(hist2)
+                    await asyncio.to_thread(_persist_message, app, sid, human_mw, vid_ws)
+                    await asyncio.to_thread(_persist_message, app, sid, ai_mw, vid_ws)
+                    await asyncio.to_thread(_persist_trim, app, sid)
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -674,8 +791,11 @@ async def chat_fallback(req: ChatRequest) -> ChatResponse:
 
     async with lock:
         hist2 = sessions.get(sid, [])
-        hist2.append(AIMessage(content=reply if reply else err or ""))
+        ai_msg_fb = AIMessage(content=reply if reply else err or "")
+        hist2.append(ai_msg_fb)
         _trim_session(hist2)
+        await asyncio.to_thread(_persist_message, app, sid, ai_msg_fb, None)
+        await asyncio.to_thread(_persist_trim, app, sid)
 
     return ChatResponse(reply=reply, session_id=sid, error=err)
 
@@ -689,6 +809,13 @@ async def clear_session(req: ClearRequest) -> dict[str, bool | str | None]:
         sid = req.session_id
         if sid and sid in sessions:
             sessions[sid].clear()
+        if sid:
+            await asyncio.to_thread(
+                clear_session_messages,
+                app.state.chroma_dir,
+                app.state.embeddings,
+                sid,
+            )
         return {"ok": True, "session_id": sid}
 
 
@@ -724,7 +851,7 @@ async def switch_version(req: VersionSwitchRequest) -> dict[str, Any]:
     version = registry.get_active()
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
     if version.session_id and version.session_id not in sessions:
-        sessions[version.session_id] = []
+        sessions[version.session_id] = _load_session_from_store(app, version.session_id)
     return {
         "ok": True,
         "active_version": version.to_dict(),
@@ -757,6 +884,76 @@ async def delete_version(version_id: str) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=400, detail="Cannot delete the last remaining version")
     return {"ok": True, "active_version_id": registry.get_active_id()}
+
+
+# ─── Chat history endpoints ───────────────────────────────────────────────────
+
+
+class ChatRenamRequest(BaseModel):
+    title: str
+
+
+@app.get("/api/chats")
+async def list_chats() -> dict[str, Any]:
+    chat_reg: ChatRegistry = app.state.chat_registry
+    return {"chats": chat_reg.list_all()}
+
+
+@app.post("/api/chats")
+async def create_chat(version_id: str | None = None) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    chat_reg: ChatRegistry = app.state.chat_registry
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    lock: asyncio.Lock = app.state.lock
+
+    vid = version_id or registry.get_active().version_id
+    entry = chat_reg.create(version_id=vid)
+    async with lock:
+        sessions[entry.chat_id] = []
+    return entry.to_dict()
+
+
+@app.patch("/api/chats/{chat_id}/title")
+async def rename_chat(chat_id: str, req: ChatRenamRequest) -> dict[str, Any]:
+    chat_reg: ChatRegistry = app.state.chat_registry
+    ok = await asyncio.to_thread(chat_reg.rename, chat_id, req.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
+    return {"ok": True}
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(chat_id: str) -> dict[str, Any]:
+    chat_reg: ChatRegistry = app.state.chat_registry
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    lock: asyncio.Lock = app.state.lock
+
+    ok = await asyncio.to_thread(chat_reg.delete, chat_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
+    await asyncio.to_thread(
+        clear_session_messages, app.state.chroma_dir, app.state.embeddings, chat_id
+    )
+    async with lock:
+        sessions.pop(chat_id, None)
+    return {"ok": True}
+
+
+@app.get("/api/chats/{chat_id}/messages")
+async def get_chat_messages(chat_id: str) -> dict[str, Any]:
+    messages = await asyncio.to_thread(
+        get_session_messages_as_dicts,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        chat_id,
+    )
+    # Also warm the in-memory session cache.
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    lock: asyncio.Lock = app.state.lock
+    async with lock:
+        if chat_id not in sessions:
+            sessions[chat_id] = _load_session_from_store(app, chat_id)
+    return {"chat_id": chat_id, "messages": messages}
 
 
 # ─── Memory item endpoints ────────────────────────────────────────────────────
@@ -879,6 +1076,18 @@ async def delete_all_data(req: DeleteAllRequest) -> dict[str, Any]:
         v = registry.get(vd["version_id"])
         if v:
             await _nuke_version(v)
+
+    # Clear all persisted session histories.
+    for sid_nuke in list(app.state.sessions.keys()):
+        try:
+            await asyncio.to_thread(
+                clear_session_messages,
+                app.state.chroma_dir,
+                app.state.embeddings,
+                sid_nuke,
+            )
+        except Exception:
+            pass
 
     app.state.sessions.clear()
     app.state.executor_cache.clear()

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, computed } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Trash2, Loader2, Database } from 'lucide-vue-next'
+import { Trash2, Loader2, Database, PanelLeft } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import MemoryPanel from './MemoryPanel.vue'
+import ConversationSidebar from './ConversationSidebar.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 
 const chatStore = useChatStore()
@@ -16,7 +17,13 @@ const toggleTransport = () => {
 }
 const logRef = ref<HTMLElement | null>(null)
 const showPanel = ref(false)
-const heroThinkingText = computed(() => streamingReply.value || status.value || "AI's thinking")
+const sidebarOpen = ref(localStorage.getItem('agent_sidebar_open') !== '0')
+const heroThinkingText = computed(() => streamingReply.value || status.value || 'AI 思考中')
+
+function toggleSidebar() {
+  sidebarOpen.value = !sidebarOpen.value
+  localStorage.setItem('agent_sidebar_open', sidebarOpen.value ? '1' : '0')
+}
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -33,7 +40,12 @@ watch(
 
 onMounted(async () => {
   scrollToBottom()
-  await chatStore.fetchVersions()
+  await Promise.all([chatStore.fetchVersions(), chatStore.fetchChats()])
+  // Restore last active chat on first load
+  const { activeChatId } = storeToRefs(chatStore)
+  if (activeChatId.value) {
+    chatStore.switchToChat(activeChatId.value)
+  }
 })
 
 const handleSend = (text: string) => {
@@ -61,6 +73,14 @@ const activeVersionName = () => {
     <!-- Command Bar -->
     <header class="command-bar">
       <div class="flex items-center gap-3">
+        <button
+          @click="toggleSidebar"
+          class="cmd-btn sidebar-toggle"
+          :class="sidebarOpen ? 'cmd-btn--active' : ''"
+          title="Toggle sidebar"
+        >
+          <PanelLeft :size="14" />
+        </button>
         <div class="flex items-center gap-2">
           <span class="status-dot" :class="isLoading ? 'dot-active' : ''"></span>
           <span class="agent-name">LOCAL AGENT</span>
@@ -99,8 +119,13 @@ const activeVersionName = () => {
       </div>
     </header>
 
-    <!-- Body: chat canvas -->
+    <!-- Body: sidebar + chat canvas -->
     <div class="body-row">
+      <!-- Conversation sidebar -->
+      <Transition name="sidebar">
+        <ConversationSidebar v-if="sidebarOpen" />
+      </Transition>
+
       <!-- Message Canvas -->
       <main class="chat-canvas">
         <!-- Scrollable messages area -->
@@ -148,7 +173,7 @@ const activeVersionName = () => {
         <!-- Status strip -->
         <div class="status-strip" :class="(status || isLoading) ? '' : 'status-strip--hidden'">
           <Loader2 :size="11" class="spin-icon" />
-          <span>{{ status || 'Thinking…' }}</span>
+          <span>{{ status || 'AI 思考中' }}</span>
         </div>
         <ChatInput :disabled="isLoading" :loading="isLoading" @send="handleSend" @terminate="handleTerminate" />
       </div>
@@ -477,5 +502,23 @@ const activeVersionName = () => {
 .panel-leave-to {
   opacity: 0;
   transform: translateX(16px);
+}
+
+/* ── Sidebar toggle button ───────────────────────────── */
+.sidebar-toggle {
+  padding: 4px 8px;
+}
+
+/* ── Sidebar slide transition ────────────────────────── */
+.sidebar-enter-active,
+.sidebar-leave-active {
+  transition: width 0.2s ease, opacity 0.18s ease;
+  overflow: hidden;
+}
+
+.sidebar-enter-from,
+.sidebar-leave-to {
+  width: 0 !important;
+  opacity: 0;
 }
 </style>

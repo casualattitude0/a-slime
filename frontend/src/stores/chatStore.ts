@@ -37,6 +37,14 @@ export interface RagItem {
   metadata: Record<string, any>
 }
 
+export interface ChatEntry {
+  chat_id: string
+  version_id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
   const sessionId = ref<string | null>(localStorage.getItem('agent_session_id'))
@@ -56,6 +64,9 @@ export const useChatStore = defineStore('chat', () => {
   const ragLoading = ref<boolean>(false)
   const activeController = ref<AbortController | null>(null)
 
+  const chats = ref<ChatEntry[]>([])
+  const activeChatId = ref<string | null>(localStorage.getItem('agent_active_chat_id'))
+
   // Legacy streaming marker kept for compatibility with message components.
   const streamingBotIndex = ref<number>(-1)
   // Preferred transport: 'sse' | 'ws'
@@ -72,6 +83,21 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /** Map a backend phase string to a user-facing display label. Falls back to the raw label. */
+  function _phaseToDisplay(phase: string, label: string): string {
+    const phaseMap: Record<string, string> = {
+      thinking: '分析問題中',
+      route_deciding: '路由決策中',
+      llm_requesting: '正在與 LLM 溝通',
+      llm_streaming: '模型回覆中',
+      tool_planning: '規劃工具呼叫',
+      tool_result_processing: '整合工具結果',
+      tool_running: label,
+      history_persisting: '儲存對話紀錄',
+    }
+    return phaseMap[phase] ?? label
+  }
+
   /** Handle one parsed event frame from either SSE or WebSocket transport. */
   function _handleStreamEvent(obj: any, originalText: string): { done: boolean } {
     if (obj.event === 'start') {
@@ -79,7 +105,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     if (obj.event === 'status' && obj.label) {
-      status.value = String(obj.label)
+      status.value = _phaseToDisplay(String(obj.phase ?? ''), String(obj.label))
     }
 
     if (obj.event === 'delta' && obj.text) {
@@ -356,9 +382,13 @@ export const useChatStore = defineStore('chat', () => {
       })
       if (!res.ok) return false
       const data = await res.json()
-      if (data.session_id) setSessionId(data.session_id)
+      if (data.session_id) {
+        setSessionId(data.session_id)
+        _setActiveChatId(data.session_id)
+      }
       messages.value = []
       await fetchVersions()
+      await fetchChats()
       return true
     } catch {
       return false
@@ -475,6 +505,96 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // ── Chat history actions ─────────────────────────────────────────────────
+
+  function _setActiveChatId(id: string | null) {
+    activeChatId.value = id
+    if (id) {
+      localStorage.setItem('agent_active_chat_id', id)
+    } else {
+      localStorage.removeItem('agent_active_chat_id')
+    }
+  }
+
+  async function fetchChats() {
+    try {
+      const res = await fetch('/api/chats')
+      if (!res.ok) return
+      const data = await res.json()
+      chats.value = data.chats ?? []
+    } catch {}
+  }
+
+  async function createNewChat(): Promise<string | null> {
+    try {
+      const res = await fetch('/api/chats', { method: 'POST' })
+      if (!res.ok) return null
+      const entry: ChatEntry = await res.json()
+      await fetchChats()
+      messages.value = []
+      setSessionId(entry.chat_id)
+      _setActiveChatId(entry.chat_id)
+      return entry.chat_id
+    } catch {
+      return null
+    }
+  }
+
+  async function switchToChat(chatId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages`)
+      if (!res.ok) return false
+      const data = await res.json()
+      const loaded: Message[] = (data.messages ?? []).map((m: { role: string; text: string }) => ({
+        role: m.role as 'user' | 'bot',
+        text: m.text,
+      }))
+      messages.value = loaded
+      setSessionId(chatId)
+      _setActiveChatId(chatId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function renameChat(chatId: string, title: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/title`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      })
+      if (!res.ok) return false
+      await fetchChats()
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function deleteChat(chatId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
+      if (!res.ok) return false
+      chats.value = chats.value.filter((c) => c.chat_id !== chatId)
+      if (activeChatId.value === chatId) {
+        // Switch to most recent remaining chat, or clear
+        const next = chats.value[0]
+        if (next) {
+          await switchToChat(next.chat_id)
+        } else {
+          messages.value = []
+          setSessionId(null)
+          _setActiveChatId(null)
+        }
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
   // ── Global nuke ──────────────────────────────────────────────────────────
 
   async function deleteAllData(): Promise<boolean> {
@@ -488,7 +608,9 @@ export const useChatStore = defineStore('chat', () => {
       messages.value = []
       memoryItems.value = []
       ragItems.value = []
+      chats.value = []
       setSessionId(null)
+      _setActiveChatId(null)
       await fetchVersions()
       return true
     } catch {
@@ -512,6 +634,8 @@ export const useChatStore = defineStore('chat', () => {
     memoryLoading,
     ragItems,
     ragLoading,
+    chats,
+    activeChatId,
     sendMessage,
     terminateMessage,
     clearHistory,
@@ -528,5 +652,10 @@ export const useChatStore = defineStore('chat', () => {
     deleteRagItem,
     deleteAllRag,
     deleteAllData,
+    fetchChats,
+    createNewChat,
+    switchToChat,
+    renameChat,
+    deleteChat,
   }
 })

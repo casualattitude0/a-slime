@@ -67,7 +67,7 @@ class AgentStatusCallbackHandler(BaseCallbackHandler):
         name = str((serialized or {}).get("name") or "").lower()
         id_path = str((serialized or {}).get("id") or "").lower()
         if "agent" in name or "agent" in id_path or "executor" in name:
-            _emit_status("thinking", "思考")
+            _emit_status("thinking", "分析問題中")
 
     def on_chat_model_start(
         self,
@@ -80,7 +80,7 @@ class AgentStatusCallbackHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
-        _emit_status("reasoning", "推理")
+        _emit_status("llm_requesting", "正在與 LLM 溝通")
 
     def on_tool_start(
         self,
@@ -94,8 +94,20 @@ class AgentStatusCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         name = str((serialized or {}).get("name") or "")
-        if name == "document_search":
-            _emit_status("reading", "調閱文件")
+        phase, label = _tool_name_to_status(name)
+        _emit_status(phase, label)
+
+    def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _emit_status("tool_result_processing", "整合工具結果")
 
 
 def _normalize_search_query(raw: Any) -> str:
@@ -193,8 +205,15 @@ def should_escalate_to_gemini(user_message: str, history_message_count: int) -> 
         return False
 
 
-def local_quick_reply(user_message: str, history_message_count: int) -> str | None:
-    """Use local Ollama model to decide simple-vs-complex and optionally answer directly."""
+def local_quick_reply(user_message: str, history: list) -> str | None:
+    """Use local Ollama model to decide simple-vs-complex and optionally answer directly.
+
+    ``history`` is the list of BaseMessage objects from the current session.
+    The router receives the last few turns so it can answer context-dependent
+    questions (e.g. "what did I just ask?") without escalating to the full agent.
+    """
+    from langchain_core.messages import AIMessage as _AI, HumanMessage as _HM
+
     root = _project_root()
     load_dotenv(root / ".env")
     enabled = (os.environ.get("AGENT_LOCAL_ROUTER_ENABLED") or "1").strip().lower()
@@ -206,20 +225,37 @@ def local_quick_reply(user_message: str, history_message_count: int) -> str | No
     if not msg:
         return None
 
+    history_message_count = len(history) if history else 0
+
+    # Build recent-history context (last 6 messages = 3 turns).
+    history_context = ""
+    if history:
+        recent = history[-6:]
+        lines: list[str] = []
+        for m in recent:
+            role = "Assistant" if isinstance(m, _AI) else "User"
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            lines.append(f"{role}: {content[:300]}")
+        if lines:
+            history_context = "Recent conversation (use this to answer context-dependent questions):\n"
+            history_context += "\n".join(lines) + "\n\n"
+
     llm = make_ollama_llm()
     router_prompt = (
         "You are a lightweight local router.\n"
         "Task:\n"
         "1) Decide whether the user's message is SIMPLE.\n"
-        "2) If SIMPLE, provide a direct short answer without tools.\n"
-        "3) If COMPLEX, do not answer.\n\n"
-        "SIMPLE means it can be answered directly without web search, document retrieval, "
-        "or long multi-step reasoning.\n\n"
+        "2) If SIMPLE, provide a direct short answer using the conversation history below if relevant.\n"
+        "3) If COMPLEX (needs web search, document retrieval, or multi-step reasoning), do not answer.\n\n"
+        "SIMPLE includes: greetings, trivial math, direct factual questions, AND questions about "
+        "what was said earlier in this conversation (those can be answered from the history).\n"
+        "NOT SIMPLE: anything requiring current information, file search, or deep analysis.\n\n"
         "Return JSON only, no markdown:\n"
         '{"simple": true, "reply": "..."}\n'
         "or\n"
         '{"simple": false}\n\n'
-        f"history_message_count={history_message_count}\n"
+        + history_context
+        + f"history_message_count={history_message_count}\n"
         f"User message:\n{msg[:4000]}"
     )
     try:
@@ -572,14 +608,16 @@ def invoke_executor(
 def _tool_name_to_status(name: str) -> tuple[str, str]:
     """Map a LangChain tool name to a (phase, label) pair for UI status events."""
     _map = {
-        "document_search": ("reading", "調閱文件"),
-        "web_search": ("searching", "搜尋網路"),
-        "web_fetch": ("fetching", "擷取網頁"),
-        "search_memory": ("memory", "查詢記憶"),
-        "save_to_memory": ("memory", "儲存記憶"),
-        "ask_reasoning_model": ("reasoning", "深度推理"),
+        "document_search": ("tool_running", "查詢本機文件"),
+        "web_search": ("tool_running", "搜尋網路"),
+        "web_fetch": ("tool_running", "擷取網頁內容"),
+        "search_memory": ("tool_running", "查詢長期記憶"),
+        "save_to_memory": ("tool_running", "儲存至長期記憶"),
+        "ask_reasoning_model": ("tool_running", "委派推理模型"),
     }
-    return _map.get(name, ("working", name))
+    if name in _map:
+        return _map[name]
+    return ("tool_running", f"執行工具：{name}" if name else "執行工具")
 
 
 def _chunk_to_text(chunk: Any) -> str:
@@ -654,6 +692,7 @@ async def astream_executor(
     executor_run_id: str | None = None
     final_output: dict[str, Any] = {}
     seen_thinking = False
+    seen_first_text_delta = False
 
     try:
         async for ev in inner_exec.astream_events(run_payload, version="v2"):
@@ -670,7 +709,7 @@ async def astream_executor(
                     executor_run_id = run_id
                 if not seen_thinking:
                     seen_thinking = True
-                    yield {"event": "status", "phase": "thinking", "label": "思考"}
+                    yield {"event": "status", "phase": "thinking", "label": "分析問題中"}
 
             elif ev_name == "on_chain_end":
                 # Capture the AgentExecutor's final output dict.
@@ -680,17 +719,30 @@ async def astream_executor(
                         final_output = output_data
 
             elif ev_name == "on_chat_model_start":
-                yield {"event": "status", "phase": "reasoning", "label": "推理"}
+                yield {"event": "status", "phase": "llm_requesting", "label": "正在與 LLM 溝通"}
+
+            elif ev_name == "on_chat_model_end":
+                # If the model decided to call tools, signal that.
+                output = (ev.get("data") or {}).get("output")
+                tool_calls = getattr(output, "tool_calls", None) or []
+                if tool_calls:
+                    yield {"event": "status", "phase": "tool_planning", "label": "規劃工具呼叫"}
 
             elif ev_name == "on_tool_start":
                 tool_name = ev.get("name") or ""
                 phase, label = _tool_name_to_status(tool_name)
-                yield {"event": "status", "phase": phase, "label": label}
+                yield {"event": "status", "phase": phase, "label": label, "tool": tool_name}
+
+            elif ev_name == "on_tool_end":
+                yield {"event": "status", "phase": "tool_result_processing", "label": "整合工具結果"}
 
             elif ev_name == "on_chat_model_stream":
                 chunk = (ev.get("data") or {}).get("chunk")
                 text = _chunk_to_text(chunk)
                 if text:
+                    if not seen_first_text_delta:
+                        seen_first_text_delta = True
+                        yield {"event": "status", "phase": "llm_streaming", "label": "模型回覆中"}
                     yield {"event": "delta", "text": text}
 
         yield {"event": "_done", "output": final_output}
