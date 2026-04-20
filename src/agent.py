@@ -23,6 +23,8 @@ from src.tools import (
     make_web_search_tool,
 )
 
+_DEFAULT_RAG_COLLECTION = "langchain"
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -238,11 +240,80 @@ class _PrefetchExecutor:
         return getattr(object.__getattribute__(self, "_executor"), name)
 
 
+def list_rag_items(
+    chroma_dir: Path,
+    embeddings: Any,
+    rag_collection: str = _DEFAULT_RAG_COLLECTION,
+) -> list[dict]:
+    try:
+        store = Chroma(
+            persist_directory=str(chroma_dir),
+            embedding_function=embeddings,
+            collection_name=rag_collection,
+        )
+        result = store._collection.get(include=["documents", "metadatas"])
+        items = []
+        ids = result.get("ids") or []
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+        for i, doc_id in enumerate(ids):
+            items.append(
+                {
+                    "id": doc_id,
+                    "content": (docs[i][:200] if i < len(docs) else ""),
+                    "metadata": metas[i] if i < len(metas) else {},
+                }
+            )
+        return items
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+def delete_rag_item(
+    chroma_dir: Path,
+    embeddings: Any,
+    item_id: str,
+    rag_collection: str = _DEFAULT_RAG_COLLECTION,
+) -> bool:
+    try:
+        store = Chroma(
+            persist_directory=str(chroma_dir),
+            embedding_function=embeddings,
+            collection_name=rag_collection,
+        )
+        store._collection.delete(ids=[item_id])
+        return True
+    except Exception:
+        return False
+
+
+def delete_all_rag_items(
+    chroma_dir: Path,
+    embeddings: Any,
+    rag_collection: str = _DEFAULT_RAG_COLLECTION,
+) -> bool:
+    try:
+        store = Chroma(
+            persist_directory=str(chroma_dir),
+            embedding_function=embeddings,
+            collection_name=rag_collection,
+        )
+        result = store._collection.get(include=[])
+        ids = result.get("ids") or []
+        if ids:
+            store._collection.delete(ids=ids)
+        return True
+    except Exception:
+        return False
+
+
 def build_executor(
     chroma_dir: Path | None = None,
     *,
     llm: BaseChatModel | None = None,
     retriever_k: int = 4,
+    memory_collection: str | None = None,
+    rag_collection: str = _DEFAULT_RAG_COLLECTION,
 ) -> AgentExecutor | _PrefetchExecutor:
     root = _project_root()
     load_dotenv(root / ".env")
@@ -262,6 +333,7 @@ def build_executor(
     vectorstore = Chroma(
         persist_directory=str(chroma_path),
         embedding_function=embeddings,
+        collection_name=rag_collection,
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": retriever_k})
 
@@ -288,7 +360,8 @@ def build_executor(
 
     web_search_tool = make_web_search_tool()
     web_fetch_tool = make_web_fetch_tool()
-    memory_tools = make_memory_tools(chroma_path, embeddings)
+    mem_col = memory_collection or "agent_memory"
+    memory_tools = make_memory_tools(chroma_path, embeddings, collection_name=mem_col)
     reasoning_tool = make_reasoning_tool()
 
     chat_model = llm or _make_llm()

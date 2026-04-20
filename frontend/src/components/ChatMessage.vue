@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, Bot, AlertTriangle } from 'lucide-vue-next'
+import { User, AlertTriangle } from 'lucide-vue-next'
+import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 
 const props = defineProps<{
   role: 'user' | 'bot' | 'err'
@@ -30,8 +31,8 @@ const renderedText = computed(() => {
     }"
   >
     <div class="shrink-0 mt-1">
-      <div 
-        class="w-8 h-8 rounded-full flex items-center justify-center"
+      <div
+        class="w-8 h-8 rounded-full flex items-center justify-center overflow-hidden"
         :class="{
           'bg-accent text-gray-900': role === 'user',
           'bg-gray-700 text-gray-200': role === 'bot',
@@ -39,7 +40,12 @@ const renderedText = computed(() => {
         }"
       >
         <User v-if="role === 'user'" :size="18" />
-        <Bot v-else-if="role === 'bot'" :size="18" />
+        <img
+          v-else-if="role === 'bot'"
+          :src="aiSlimeAvatar"
+          alt="AI avatar"
+          class="w-full h-full object-cover"
+        />
         <AlertTriangle v-else :size="18" />
       </div>
     </div>

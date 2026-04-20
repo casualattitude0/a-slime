@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Trash2, Loader2 } from 'lucide-vue-next'
+import { Trash2, Loader2, Database } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
+import MemoryPanel from './MemoryPanel.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 
 const chatStore = useChatStore()
-const { messages, status, isLoading } = storeToRefs(chatStore)
+const { messages, status, isLoading, activeVersionId, versions } = storeToRefs(chatStore)
 const logRef = ref<HTMLElement | null>(null)
+const showPanel = ref(false)
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -26,8 +28,9 @@ watch(
   { deep: true }
 )
 
-onMounted(() => {
+onMounted(async () => {
   scrollToBottom()
+  await chatStore.fetchVersions()
 })
 
 const handleSend = (text: string) => {
@@ -39,28 +42,52 @@ const handleClear = () => {
     chatStore.clearHistory()
   }
 }
+
+const activeVersionName = () => {
+  const v = versions.value.find((v) => v.version_id === activeVersionId.value)
+  return v?.name ?? '—'
+}
 </script>
 
 <template>
-  <div class="flex h-screen max-w-6xl mx-auto px-4 py-6 gap-8">
+  <div class="flex h-screen max-w-6xl mx-auto px-4 py-6 gap-4">
     <!-- Main Chat Area -->
     <div class="flex-1 flex flex-col h-full min-w-0">
       <!-- Header -->
       <header class="flex items-center justify-between mb-6">
-        <h1 class="text-xl font-semibold text-gray-100">Local Agent</h1>
-        
-        <button 
-          @click="handleClear"
-          class="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg text-gray-400 hover:text-error hover:bg-surface transition-colors"
-          :disabled="isLoading"
-        >
-          <Trash2 :size="16" />
-          Clear History
-        </button>
+        <div class="flex items-center gap-3">
+          <h1 class="text-xl font-semibold text-gray-100">Local Agent</h1>
+          <span class="text-xs px-2 py-0.5 rounded-full border border-gray-700 text-gray-500">
+            {{ activeVersionName() }}
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button
+            @click="showPanel = !showPanel"
+            class="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors"
+            :class="showPanel
+              ? 'text-accent bg-surface'
+              : 'text-gray-400 hover:text-accent hover:bg-surface'"
+            title="RAG / 記憶管理"
+          >
+            <Database :size="16" />
+            RAG / 記憶
+          </button>
+
+          <button
+            @click="handleClear"
+            class="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg text-gray-400 hover:text-error hover:bg-surface transition-colors"
+            :disabled="isLoading"
+          >
+            <Trash2 :size="16" />
+            Clear History
+          </button>
+        </div>
       </header>
-      
+
       <!-- Chat Log -->
-      <main 
+      <main
         ref="logRef"
         class="flex-1 overflow-y-auto mb-6 pr-2 scroll-smooth"
       >
@@ -70,33 +97,46 @@ const handleClear = () => {
           </div>
           <p>Start a conversation...</p>
         </div>
-        
-        <ChatMessage 
-          v-for="(msg, i) in messages" 
+
+        <ChatMessage
+          v-for="(msg, i) in messages"
           :key="i"
           :role="msg.role"
           :text="msg.text"
         />
       </main>
-      
+
       <!-- Input Area -->
       <footer class="shrink-0">
-        <ChatInput 
+        <ChatInput
           :disabled="isLoading"
           @send="handleSend"
         />
       </footer>
     </div>
 
+    <!-- RAG / Memory Panel -->
+    <Transition name="panel">
+      <div
+        v-if="showPanel"
+        class="w-72 shrink-0 h-full flex flex-col"
+      >
+        <MemoryPanel />
+      </div>
+    </Transition>
+
     <!-- Avatar Sidebar -->
-    <div class="flex flex-col w-64 items-center justify-end pb-8 shrink-0">
+    <div
+      v-if="!showPanel"
+      class="flex flex-col w-48 items-center justify-end pb-8 shrink-0"
+    >
       <!-- Status Indicator -->
       <div v-if="status || isLoading" class="flex flex-col items-center gap-2 mb-4 text-sm text-accent animate-pulse">
         <Loader2 class="animate-spin" :size="24" />
         <span class="text-center">{{ status || 'Thinking...' }}</span>
       </div>
-      
-      <img :src="aiSlimeAvatar" alt="AI Agent Avatar" class="w-48 h-48 object-contain" />
+
+      <img :src="aiSlimeAvatar" alt="AI Agent Avatar" class="w-40 h-40 object-contain" />
     </div>
   </div>
 </template>
@@ -115,5 +155,15 @@ const handleClear = () => {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #495057;
+}
+
+.panel-enter-active,
+.panel-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.panel-enter-from,
+.panel-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
 }
 </style>

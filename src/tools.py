@@ -16,6 +16,74 @@ from pydantic import BaseModel, Field
 _MEMORY_COLLECTION = "agent_memory"
 
 
+def _memory_store_for(
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str,
+) -> Chroma:
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    return Chroma(
+        persist_directory=str(chroma_dir),
+        embedding_function=embeddings,
+        collection_name=collection_name,
+    )
+
+
+def list_memory_items(
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str = _MEMORY_COLLECTION,
+) -> list[dict]:
+    try:
+        store = _memory_store_for(chroma_dir, embeddings, collection_name)
+        result = store._collection.get(include=["documents", "metadatas"])
+        items = []
+        ids = result.get("ids") or []
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+        for i, mem_id in enumerate(ids):
+            items.append(
+                {
+                    "id": mem_id,
+                    "content": docs[i] if i < len(docs) else "",
+                    "metadata": metas[i] if i < len(metas) else {},
+                }
+            )
+        return items
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+def delete_memory_item(
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    item_id: str,
+    collection_name: str = _MEMORY_COLLECTION,
+) -> bool:
+    try:
+        store = _memory_store_for(chroma_dir, embeddings, collection_name)
+        store._collection.delete(ids=[item_id])
+        return True
+    except Exception:
+        return False
+
+
+def delete_all_memory_items(
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str = _MEMORY_COLLECTION,
+) -> bool:
+    try:
+        store = _memory_store_for(chroma_dir, embeddings, collection_name)
+        result = store._collection.get(include=[])
+        ids = result.get("ids") or []
+        if ids:
+            store._collection.delete(ids=ids)
+        return True
+    except Exception:
+        return False
+
+
 class WebSearchArgs(BaseModel):
     query: str = Field(description="Web search query")
     max_results: int = Field(default=5, description="Max results (1-10)")
@@ -106,14 +174,11 @@ def make_web_fetch_tool() -> StructuredTool:
 
 
 def _memory_store(
-    chroma_dir: Path, embeddings: GoogleGenerativeAIEmbeddings
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str = _MEMORY_COLLECTION,
 ) -> Chroma:
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    return Chroma(
-        persist_directory=str(chroma_dir),
-        embedding_function=embeddings,
-        collection_name=_MEMORY_COLLECTION,
-    )
+    return _memory_store_for(chroma_dir, embeddings, collection_name)
 
 
 class SaveMemoryArgs(BaseModel):
@@ -127,9 +192,11 @@ class SearchMemoryArgs(BaseModel):
 
 
 def make_memory_tools(
-    chroma_dir: Path, embeddings: GoogleGenerativeAIEmbeddings
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str = _MEMORY_COLLECTION,
 ) -> list[StructuredTool]:
-    store = _memory_store(chroma_dir, embeddings)
+    store = _memory_store(chroma_dir, embeddings, collection_name)
 
     def _save(content: str, tags: str = "") -> str:
         c = (content or "").strip()

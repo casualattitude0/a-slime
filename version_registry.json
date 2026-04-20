@@ -1,0 +1,14 @@
+{
+  "active_version_id": "default",
+  "versions": [
+    {
+      "version_id": "default",
+      "name": "Default",
+      "session_id": "824dce2c-ee11-4b6c-bd26-c594013b512e",
+      "memory_collection": "agent_memory",
+      "rag_collection": "langchain",
+      "model_profile": "default",
+      "created_at": "2026-04-20T10:01:42.553238+00:00"
+    }
+  ]
+}

@@ -15,19 +15,30 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
 from src.agent import (
     build_executor,
+    delete_all_rag_items,
+    delete_rag_item,
     invoke_executor,
+    list_rag_items,
     make_gemini_llm,
     make_ollama_llm,
     normalize_agent_output,
     should_escalate_to_gemini,
 )
+from src.tools import (
+    delete_all_memory_items,
+    delete_memory_item,
+    list_memory_items,
+)
+from src.version_registry import VersionRegistry
 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "frontend" / "dist"
+_REGISTRY_PATH = _ROOT / "version_registry.json"
 
 _MAX_SESSION_MESSAGES = 40
 
@@ -37,6 +48,8 @@ def _trim_session(msgs: list[BaseMessage]) -> None:
         return
     del msgs[: len(msgs) - _MAX_SESSION_MESSAGES]
 
+
+# ─── Request / Response models ────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     message: str = Field(default="")
@@ -53,15 +66,86 @@ class ClearRequest(BaseModel):
     session_id: str | None = None
 
 
-def _select_executor(app: FastAPI, user_message: str, history_len: int) -> Any:
-    ollama_ex = getattr(app.state, "executor_ollama", None)
-    gemini_ex = getattr(app.state, "executor_gemini", None)
-    if ollama_ex is not None and should_escalate_to_gemini(user_message, history_len):
-        return gemini_ex
-    if ollama_ex is not None:
-        return ollama_ex
-    return gemini_ex
+class VersionSwitchRequest(BaseModel):
+    version_id: str
 
+
+class VersionCreateRequest(BaseModel):
+    name: str
+    model_profile: str = "default"
+
+
+class DeleteAllRequest(BaseModel):
+    confirm_token: str
+
+
+# ─── Executor helpers ─────────────────────────────────────────────────────────
+
+def _available_model_profiles() -> list[str]:
+    profiles = ["default"]
+    if (os.environ.get("GEMINI_MODEL") or "").strip():
+        profiles.append("gemini")
+    if (os.environ.get("OLLAMA_MODEL") or "").strip():
+        profiles.append("ollama")
+    if (os.environ.get("GEMINI_PRO_MODEL") or "").strip():
+        profiles.append("gemini-pro")
+    return profiles
+
+
+def _build_executor_for_profile(
+    chroma_dir: Path,
+    memory_collection: str,
+    rag_collection: str,
+    model_profile: str,
+) -> Any:
+    if model_profile == "ollama":
+        llm = make_ollama_llm()
+    elif model_profile == "gemini-pro":
+        pro = (os.environ.get("GEMINI_PRO_MODEL") or "").strip() or "gemini-2.5-pro"
+        llm = make_gemini_llm(model=pro)
+    elif model_profile == "gemini":
+        llm = make_gemini_llm()
+    else:
+        llm = make_gemini_llm()
+
+    return build_executor(
+        chroma_dir=chroma_dir,
+        llm=llm,
+        memory_collection=memory_collection,
+        rag_collection=rag_collection,
+    )
+
+
+def _get_executor(app: FastAPI, version_id: str, user_message: str, history_len: int) -> Any:
+    registry: VersionRegistry = app.state.version_registry
+    version = registry.get(version_id) or registry.get_active()
+
+    cache: dict[str, Any] = app.state.executor_cache
+    cache_key = f"{version.version_id}:{version.model_profile}"
+
+    if cache_key not in cache:
+        cache[cache_key] = _build_executor_for_profile(
+            app.state.chroma_dir,
+            version.memory_collection,
+            version.rag_collection,
+            version.model_profile,
+        )
+
+    executor = cache[cache_key]
+
+    if version.model_profile == "default":
+        ollama_ex = getattr(app.state, "executor_ollama", None)
+        gemini_ex = getattr(app.state, "executor_gemini", None)
+        if ollama_ex is not None and should_escalate_to_gemini(user_message, history_len):
+            return gemini_ex
+        if ollama_ex is not None:
+            return ollama_ex
+        return gemini_ex
+
+    return executor
+
+
+# ─── Lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -70,15 +154,36 @@ async def _lifespan(app: FastAPI):
         raise RuntimeError(
             "Set GOOGLE_API_KEY or GEMINI_API_KEY in .env (required for RAG embeddings)."
         )
+
+    embed_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    embed_model = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+    app.state.embeddings = GoogleGenerativeAIEmbeddings(
+        model=embed_model,
+        google_api_key=embed_key,
+    )
+    app.state.chroma_dir = (_ROOT / "chroma_db").resolve()
+    app.state.chroma_dir.mkdir(parents=True, exist_ok=True)
+
+    app.state.version_registry = VersionRegistry(_REGISTRY_PATH)
+    app.state.executor_cache: dict[str, Any] = {}
+    app.state.available_profiles = _available_model_profiles()
+
     try:
-        app.state.executor_gemini = build_executor(llm=make_gemini_llm())
+        app.state.executor_gemini = build_executor(
+            chroma_dir=app.state.chroma_dir,
+            llm=make_gemini_llm(),
+        )
         if (os.environ.get("OLLAMA_MODEL") or "").strip():
-            app.state.executor_ollama = build_executor(llm=make_ollama_llm())
+            app.state.executor_ollama = build_executor(
+                chroma_dir=app.state.chroma_dir,
+                llm=make_ollama_llm(),
+            )
         else:
             app.state.executor_ollama = None
         app.state.executor = app.state.executor_ollama or app.state.executor_gemini
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
+
     app.state.sessions: dict[str, list[BaseMessage]] = {}
     app.state.lock = asyncio.Lock()
     yield
@@ -90,13 +195,19 @@ assets_path = _STATIC / "assets"
 if assets_path.is_dir():
     app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
 
+
 @app.get("/")
 async def index() -> FileResponse:
     path = _STATIC / "index.html"
     if not path.is_file():
-        raise HTTPException(status_code=500, detail="Missing frontend/dist/index.html. Did you run npm run build?")
+        raise HTTPException(
+            status_code=500,
+            detail="Missing frontend/dist/index.html. Did you run npm run build?",
+        )
     return FileResponse(path)
 
+
+# ─── Chat endpoints (original, backward compatible) ───────────────────────────
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
@@ -106,18 +217,23 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     lock: asyncio.Lock = app.state.lock
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    registry: VersionRegistry = app.state.version_registry
 
     async with lock:
+        version = registry.get_active()
         sid: str
         if req.session_id and req.session_id in sessions:
             sid = req.session_id
+        elif version.session_id and version.session_id in sessions:
+            sid = version.session_id
         else:
             sid = str(uuid.uuid4())
             sessions[sid] = []
+            registry.update_session(version.version_id, sid)
 
         hist = sessions[sid]
         history_for_prompt = list(hist)
-        executor = _select_executor(app, msg, len(hist))
+        executor = _get_executor(app, version.version_id, msg, len(hist))
 
         try:
             result = await asyncio.to_thread(
@@ -130,10 +246,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
         out = result.get("output")
         reply = normalize_agent_output(out)
-        if not reply:
-            err = f"No text output; full result: {result!r}"
-        else:
-            err = None
+        err = None if reply else f"No text output; full result: {result!r}"
 
         hist.append(HumanMessage(content=msg))
         hist.append(AIMessage(content=reply if reply else err or ""))
@@ -150,17 +263,22 @@ async def chat_stream(req: ChatRequest):
 
     lock: asyncio.Lock = app.state.lock
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    registry: VersionRegistry = app.state.version_registry
 
     async with lock:
+        version = registry.get_active()
         if req.session_id and req.session_id in sessions:
             sid = req.session_id
+        elif version.session_id and version.session_id in sessions:
+            sid = version.session_id
         else:
             sid = str(uuid.uuid4())
             sessions[sid] = []
+            registry.update_session(version.version_id, sid)
 
         hist = sessions[sid]
         history_for_prompt = list(hist)
-        executor = _select_executor(app, msg, len(hist))
+        executor = _get_executor(app, version.version_id, msg, len(hist))
         payload = {"input": msg, "chat_history": history_for_prompt}
 
     q: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -243,8 +361,189 @@ async def clear_session(req: ClearRequest) -> dict[str, bool | str | None]:
         sid = req.session_id
         if sid and sid in sessions:
             sessions[sid].clear()
-            return {"ok": True, "session_id": sid}
         return {"ok": True, "session_id": sid}
+
+
+# ─── Version endpoints ────────────────────────────────────────────────────────
+
+@app.get("/api/versions")
+async def get_versions() -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    return {
+        "versions": registry.list_versions(),
+        "active_version_id": registry.get_active_id(),
+        "available_model_profiles": app.state.available_profiles,
+    }
+
+
+@app.post("/api/versions/switch")
+async def switch_version(req: VersionSwitchRequest) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    ok = registry.switch(req.version_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Version '{req.version_id}' not found")
+    version = registry.get_active()
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    if version.session_id and version.session_id not in sessions:
+        sessions[version.session_id] = []
+    return {
+        "ok": True,
+        "active_version": version.to_dict(),
+        "session_id": version.session_id,
+    }
+
+
+@app.post("/api/versions/create")
+async def create_version(req: VersionCreateRequest) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    if req.model_profile not in app.state.available_profiles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model profile '{req.model_profile}'. Available: {app.state.available_profiles}",
+        )
+    version = registry.create(req.name, req.model_profile)
+    return {"ok": True, "version": {**version.to_dict(), "is_active": False}}
+
+
+@app.delete("/api/versions/{version_id}")
+async def delete_version(version_id: str) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    cache: dict[str, Any] = app.state.executor_cache
+    version = registry.get(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail=f"Version '{version_id}' not found")
+    for profile in app.state.available_profiles + ["default"]:
+        cache.pop(f"{version_id}:{profile}", None)
+    ok = registry.delete(version_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Cannot delete the last remaining version")
+    return {"ok": True, "active_version_id": registry.get_active_id()}
+
+
+# ─── Memory item endpoints ────────────────────────────────────────────────────
+
+@app.get("/api/memory/items")
+async def get_memory_items(version_id: str | None = None) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    version = (registry.get(version_id) if version_id else None) or registry.get_active()
+    items = await asyncio.to_thread(
+        list_memory_items,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        version.memory_collection,
+    )
+    return {"items": items, "collection": version.memory_collection}
+
+
+@app.delete("/api/memory/items/{item_id}")
+async def delete_memory_item_endpoint(
+    item_id: str, version_id: str | None = None
+) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    version = (registry.get(version_id) if version_id else None) or registry.get_active()
+    ok = await asyncio.to_thread(
+        delete_memory_item,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        item_id,
+        version.memory_collection,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Memory item '{item_id}' not found or delete failed")
+    return {"ok": True}
+
+
+@app.delete("/api/memory/all")
+async def delete_all_memory(version_id: str | None = None) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    version = (registry.get(version_id) if version_id else None) or registry.get_active()
+    ok = await asyncio.to_thread(
+        delete_all_memory_items,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        version.memory_collection,
+    )
+    return {"ok": ok}
+
+
+# ─── RAG item endpoints ───────────────────────────────────────────────────────
+
+@app.get("/api/rag/items")
+async def get_rag_items(version_id: str | None = None) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    version = (registry.get(version_id) if version_id else None) or registry.get_active()
+    items = await asyncio.to_thread(
+        list_rag_items,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        version.rag_collection,
+    )
+    return {"items": items, "collection": version.rag_collection}
+
+
+@app.delete("/api/rag/items/{item_id}")
+async def delete_rag_item_endpoint(
+    item_id: str, version_id: str | None = None
+) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    version = (registry.get(version_id) if version_id else None) or registry.get_active()
+    ok = await asyncio.to_thread(
+        delete_rag_item,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        item_id,
+        version.rag_collection,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"RAG item '{item_id}' not found or delete failed")
+    return {"ok": True}
+
+
+@app.delete("/api/rag/all")
+async def delete_all_rag(version_id: str | None = None) -> dict[str, Any]:
+    registry: VersionRegistry = app.state.version_registry
+    version = (registry.get(version_id) if version_id else None) or registry.get_active()
+    ok = await asyncio.to_thread(
+        delete_all_rag_items,
+        app.state.chroma_dir,
+        app.state.embeddings,
+        version.rag_collection,
+    )
+    return {"ok": ok}
+
+
+# ─── Global nuke ─────────────────────────────────────────────────────────────
+
+@app.delete("/api/data/all")
+async def delete_all_data(req: DeleteAllRequest) -> dict[str, Any]:
+    if req.confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token must be 'DELETE_ALL'")
+
+    registry: VersionRegistry = app.state.version_registry
+
+    async def _nuke_version(v: Any) -> None:
+        await asyncio.to_thread(
+            delete_all_memory_items,
+            app.state.chroma_dir,
+            app.state.embeddings,
+            v.memory_collection,
+        )
+        await asyncio.to_thread(
+            delete_all_rag_items,
+            app.state.chroma_dir,
+            app.state.embeddings,
+            v.rag_collection,
+        )
+
+    versions_data = registry.list_versions()
+    for vd in versions_data:
+        v = registry.get(vd["version_id"])
+        if v:
+            await _nuke_version(v)
+
+    app.state.sessions.clear()
+    app.state.executor_cache.clear()
+    return {"ok": True}
 
 
 def main() -> None:
