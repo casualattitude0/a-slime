@@ -1,23 +1,101 @@
+import ast
+import json
 import os
+import re
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.vectorstores import Chroma
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import StructuredTool
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field, field_validator
+
+from src.tools import (
+    make_memory_tools,
+    make_reasoning_tool,
+    make_web_fetch_tool,
+    make_web_search_tool,
+)
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+_status_tls = threading.local()
+
+
+def _prefetch_rag_into_input_enabled() -> bool:
+    v = (os.environ.get("AGENT_RAG_PREFETCH") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def set_invocation_status_sink(sink: Callable[[dict[str, Any]], None] | None) -> None:
+    _status_tls.sink = sink
+
+
+def _emit_status(phase: str, label: str, **extra: Any) -> None:
+    sink: Callable[[dict[str, Any]], None] | None = getattr(_status_tls, "sink", None)
+    if sink:
+        ev: dict[str, Any] = {"phase": phase, "label": label, **extra}
+        sink(ev)
+
+
+class AgentStatusCallbackHandler(BaseCallbackHandler):
+    """Maps LangChain events to zh-TW status labels for the UI."""
+
+    def on_chain_start(
+        self,
+        serialized: dict[str, Any],
+        inputs: dict[str, Any],
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        name = str((serialized or {}).get("name") or "").lower()
+        id_path = str((serialized or {}).get("id") or "").lower()
+        if "agent" in name or "agent" in id_path or "executor" in name:
+            _emit_status("thinking", "思考")
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[Any],
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        _emit_status("reasoning", "推理")
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any] | None,
+        input_str: str,
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        name = str((serialized or {}).get("name") or "")
+        if name == "document_search":
+            _emit_status("reading", "調閱文件")
+
+
 def _normalize_search_query(raw: Any) -> str:
-    """Ollama tool calls sometimes pass nested JSON or wrong-shaped args."""
     if isinstance(raw, str):
         return raw.strip()
     if isinstance(raw, dict):
@@ -40,29 +118,80 @@ class DocumentSearchArgs(BaseModel):
         return _normalize_search_query(v)
 
 
-def _make_llm() -> BaseChatModel:
-    ollama_model = (os.environ.get("OLLAMA_MODEL") or "").strip()
-    if ollama_model:
-        from langchain_ollama import ChatOllama
+def make_ollama_llm() -> BaseChatModel:
+    from langchain_ollama import ChatOllama
 
-        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-        return ChatOllama(
-            model=ollama_model,
-            base_url=base_url,
-            temperature=0,
-        )
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    model = (os.environ.get("OLLAMA_MODEL") or "").strip()
+    if not model:
+        raise ValueError("OLLAMA_MODEL is not set.")
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    return ChatOllama(model=model, base_url=base_url, temperature=0)
+
+
+def make_gemini_llm(*, model: str | None = None) -> BaseChatModel:
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError(
-            "For Gemini, set GOOGLE_API_KEY or GEMINI_API_KEY. "
-            "For a local agent LLM, set OLLAMA_MODEL (Ollama must be running)."
-        )
-    return ChatGoogleGenerativeAI(model=model, temperature=0, google_api_key=api_key)
+        raise ValueError("Set GOOGLE_API_KEY or GEMINI_API_KEY for Gemini.")
+    m = model or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    return ChatGoogleGenerativeAI(model=m, temperature=0, google_api_key=api_key)
+
+
+def _make_llm() -> BaseChatModel:
+    if (os.environ.get("OLLAMA_MODEL") or "").strip():
+        return make_ollama_llm()
+    return make_gemini_llm()
+
+
+def should_escalate_to_gemini(user_message: str, history_message_count: int) -> bool:
+    """When Ollama is available and Gemini API key exists, ask Gemini whether to escalate."""
+    root = _project_root()
+    load_dotenv(root / ".env")
+    enabled = (os.environ.get("AGENT_ROUTER_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        return False
+    if not (os.environ.get("OLLAMA_MODEL") or "").strip():
+        return False
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return False
+    try:
+        skip_max = int((os.environ.get("AGENT_ROUTER_SKIP_MAX_CHARS") or "80").strip())
+    except ValueError:
+        skip_max = 80
+    msg = user_message.strip()
+    if len(msg) <= skip_max and history_message_count == 0:
+        return False
+
+    router_model = (os.environ.get("GEMINI_ROUTER_MODEL") or "").strip() or (
+        os.environ.get("GEMINI_MODEL") or "gemini-2.0-flash"
+    )
+    llm = ChatGoogleGenerativeAI(
+        model=router_model,
+        temperature=0,
+        google_api_key=api_key,
+    )
+    router_prompt = (
+        "You are a routing classifier. Decide if the user message needs deep reasoning, "
+        "multi-step analysis, subtle judgment, or is likely too difficult for a small local model. "
+        "Reply with JSON only, no markdown: {\"escalate\": true} or {\"escalate\": false}\n\n"
+        f"User message:\n{msg[:8000]}"
+    )
+    try:
+        resp = llm.invoke(router_prompt)
+        text = str(getattr(resp, "content", None) or resp).strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        m = re.search(r"\{[^{}]*\"escalate\"[^{}]*\}", text, re.DOTALL)
+        chunk = m.group(0) if m else text
+        data = json.loads(chunk)
+        return bool(data.get("escalate"))
+    except Exception:
+        return False
 
 
 class _PrefetchExecutor:
-    """委派 AgentExecutor：每次 invoke 先預檢索並注入嵌入片段（Pydantic AgentExecutor 不可覆寫 invoke）。"""
+    """Delegates to AgentExecutor; optional prefetch merges retriever chunks into input."""
 
     __slots__ = ("_executor", "_retriever")
 
@@ -71,15 +200,26 @@ class _PrefetchExecutor:
         object.__setattr__(self, "_retriever", retriever)
 
     def invoke(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        config = kwargs.pop("config", None)
+        if len(args) >= 2 and config is None:
+            config = args[1]
         payload: dict[str, Any]
         if args and isinstance(args[0], dict):
             payload = {**args[0], **kwargs}
-        else:
+        elif kwargs:
             payload = dict(kwargs)
+        else:
+            payload = {}
         base_input = payload.get("input")
         retriever = object.__getattribute__(self, "_retriever")
-        if isinstance(base_input, str) and base_input.strip() and retriever is not None:
+        if (
+            _prefetch_rag_into_input_enabled()
+            and isinstance(base_input, str)
+            and base_input.strip()
+            and retriever is not None
+        ):
             q = base_input.strip()
+            _emit_status("reading", "調閱文件")
             docs = retriever.invoke(q)
             if docs:
                 ctx = "\n\n".join(d.page_content for d in docs)
@@ -89,7 +229,10 @@ class _PrefetchExecutor:
                     "say if something is not covered here.]\n"
                     f"{ctx}"
                 )
-        return self._executor.invoke(payload)
+        inner = object.__getattribute__(self, "_executor")
+        if config is not None:
+            return inner.invoke(payload, config=config)
+        return inner.invoke(payload)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(object.__getattribute__(self, "_executor"), name)
@@ -98,15 +241,13 @@ class _PrefetchExecutor:
 def build_executor(
     chroma_dir: Path | None = None,
     *,
+    llm: BaseChatModel | None = None,
     retriever_k: int = 4,
 ) -> AgentExecutor | _PrefetchExecutor:
     root = _project_root()
     load_dotenv(root / ".env")
     chroma_path = (chroma_dir or (root / "chroma_db")).resolve()
-    if not chroma_path.is_dir():
-        raise FileNotFoundError(
-            f"Chroma store not found at {chroma_path}. Run: python src/ingest.py"
-        )
+    chroma_path.mkdir(parents=True, exist_ok=True)
 
     embed_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not embed_key:
@@ -125,6 +266,7 @@ def build_executor(
     retriever = vectorstore.as_retriever(search_kwargs={"k": retriever_k})
 
     def _run_document_search(query: str) -> str:
+        _emit_status("reading", "調閱文件")
         q = _normalize_search_query(query)
         if not q:
             return "Empty search query."
@@ -136,30 +278,60 @@ def build_executor(
     retriever_tool = StructuredTool.from_function(
         name="document_search",
         description=(
-            "Search for information in the local documents. Pass a clear search query "
-            "or question as the query argument."
+            "Search ingested local documents (data/ folder, embedded via "
+            "src/ingest.py). Use only when the user references local files "
+            "or content known to be ingested."
         ),
         func=_run_document_search,
         args_schema=DocumentSearchArgs,
     )
 
-    llm = _make_llm()
+    web_search_tool = make_web_search_tool()
+    web_fetch_tool = make_web_fetch_tool()
+    memory_tools = make_memory_tools(chroma_path, embeddings)
+    reasoning_tool = make_reasoning_tool()
+
+    chat_model = llm or _make_llm()
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "You are a helpful assistant. The user's message may include a block "
-                "marked with [Embedded local documents — ...] with passages from the local "
-                "vector store; ground your answer in that text when it applies. "
-                "You may call document_search if you need more passages.",
+                "You are a research assistant focused on helping the user with "
+                "their work. You have these tools:\n"
+                "- search_memory: persistent semantic memory of past facts/notes. "
+                "Call this FIRST when a question may rely on prior context.\n"
+                "- save_to_memory: store durable, useful facts (user preferences, "
+                "decisions, key findings) so they survive across sessions. "
+                "Save proactively but only meaningful, reusable information.\n"
+                "- web_search: DuckDuckGo search for fresh web information.\n"
+                "- web_fetch: fetch and clean a specific URL's text. Pair with "
+                "web_search to read promising results.\n"
+                "- ask_reasoning_model: delegate complex multi-step analysis or "
+                "synthesis to a stronger reasoning LLM. Pass the question and "
+                "any relevant gathered context explicitly.\n"
+                "- document_search: search local documents previously ingested "
+                "into the vector store; use only when relevant.\n\n"
+                "Workflow: (1) check memory, (2) gather facts via web tools or "
+                "documents, (3) reason yourself or delegate to "
+                "ask_reasoning_model for hard problems, (4) save important "
+                "findings to memory, (5) answer concisely with citations to "
+                "sources you used. Do not invent citations. If embedded local "
+                "documents appear in the input ([Embedded local documents — "
+                "...]) treat them as optional reference only.",
             ),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
         ]
     )
-    tools = [retriever_tool]
-    agent = create_tool_calling_agent(llm, tools, prompt)
+    tools = [
+        *memory_tools,
+        web_search_tool,
+        web_fetch_tool,
+        reasoning_tool,
+        retriever_tool,
+    ]
+    agent = create_tool_calling_agent(chat_model, tools, prompt)
     verbose = os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
     executor = AgentExecutor(
         agent=agent,
@@ -169,3 +341,162 @@ def build_executor(
         max_iterations=10,
     )
     return _PrefetchExecutor(executor, retriever)
+
+
+def status_callbacks() -> list[AgentStatusCallbackHandler]:
+    return [AgentStatusCallbackHandler()]
+
+
+def invoke_executor(
+    executor: Any,
+    payload: dict[str, Any],
+    *,
+    status_sink: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Invoke with optional status sink (thread-local) and LangChain callbacks."""
+    set_invocation_status_sink(status_sink)
+    try:
+        cb = status_callbacks()
+        return executor.invoke(payload, config={"callbacks": cb})
+    finally:
+        set_invocation_status_sink(None)
+
+
+def _blocks_to_plain_text(parts: Any) -> str:
+    """Gemini/LC content blocks → plain text (drops extras/signature/tool metadata)."""
+    if parts is None:
+        return ""
+    if isinstance(parts, str):
+        return parts
+    if isinstance(parts, list):
+        chunks: list[str] = []
+        for p in parts:
+            t = _blocks_to_plain_text(p)
+            if t:
+                chunks.append(t)
+        return "\n\n".join(chunks).strip()
+    if isinstance(parts, dict):
+        if parts.get("type") == "text" and isinstance(parts.get("text"), str):
+            return parts["text"]
+        if isinstance(parts.get("text"), str):
+            return parts["text"]
+        return ""
+    content = getattr(parts, "content", None)
+    if content is not None and content is not parts:
+        return _blocks_to_plain_text(content)
+    return str(parts) if parts else ""
+
+
+def _line_looks_like_tool_json(line: str) -> bool:
+    s = line.strip()
+    if not s.startswith("{"):
+        return False
+    try:
+        obj = json.loads(s)
+    except json.JSONDecodeError:
+        return False
+    return _is_tool_call_object(obj)
+
+
+def _strip_tool_json_lines(text: str) -> str:
+    lines = text.splitlines()
+    kept = [ln for ln in lines if ln.strip() and not _line_looks_like_tool_json(ln)]
+    return "\n".join(kept).strip()
+
+
+def _is_tool_call_object(obj: Any) -> bool:
+    if not isinstance(obj, dict) or not obj.get("name"):
+        return False
+    return "parameters" in obj or "arguments" in obj
+
+
+def _strip_tool_json_objects_anywhere(text: str) -> str:
+    """Remove tool-calling JSON objects (e.g. document_search) even if not on their own line."""
+    decoder = json.JSONDecoder()
+    i = 0
+    out: list[str] = []
+    n = len(text)
+    while i < n:
+        j = text.find("{", i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:j])
+        tail = text[j:]
+        ws = len(tail) - len(tail.lstrip())
+        snippet = tail[ws : ws + 400]
+        if '"name"' not in snippet and "'name'" not in snippet:
+            out.append("{")
+            i = j + 1
+            continue
+        try:
+            obj, consumed = decoder.raw_decode(tail, ws)
+        except json.JSONDecodeError:
+            out.append("{")
+            i = j + 1
+            continue
+        end = j + consumed
+        if _is_tool_call_object(obj):
+            i = end
+            while i < n and text[i] in " \t\r\n":
+                i += 1
+        else:
+            out.append(text[j:end])
+            i = end
+    return "".join(out).strip()
+
+
+def _extract_embedded_block_list(text: str) -> tuple[str, str] | None:
+    """If `text` embeds a Python-literal list of Gemini blocks, return (prefix, plain)."""
+    idx = text.find("[{")
+    if idx < 0:
+        return None
+    # Prefer the longest suffix starting at idx that parses as a list (shortest-first would
+    # stop at the first `]` and drop later blocks in multi-part lists).
+    for end in range(len(text), idx + 1, -1):
+        chunk = text[idx:end]
+        if not chunk.endswith("]"):
+            continue
+        try:
+            val = ast.literal_eval(chunk)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(val, list) and (
+            not val or isinstance(val[0], dict) or isinstance(val[0], str)
+        ):
+            plain = _blocks_to_plain_text(val).strip()
+            prefix = text[:idx].strip()
+            return prefix, plain
+    return None
+
+
+def normalize_agent_output(raw: Any) -> str:
+    """Executor `output` → plain user-visible string."""
+    cur: Any = raw
+    depth = 0
+    while depth < 12:
+        depth += 1
+        if cur is None:
+            return ""
+        content = getattr(cur, "content", None)
+        if content is not None:
+            cur = content
+            continue
+        break
+
+    base = _blocks_to_plain_text(cur).strip()
+    extracted = _extract_embedded_block_list(base)
+    if extracted is not None:
+        prefix, plain = extracted
+        base = "\n\n".join(x for x in (prefix, plain) if x).strip()
+
+    base = _strip_tool_json_lines(base)
+    base = _strip_tool_json_objects_anywhere(base)
+
+    extracted2 = _extract_embedded_block_list(base)
+    if extracted2 is not None:
+        prefix, plain = extracted2
+        base = "\n\n".join(x for x in (prefix, plain) if x).strip()
+
+    base = _strip_tool_json_objects_anywhere(_strip_tool_json_lines(base))
+    return base.strip()

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.agent import build_executor
+from src.agent import build_executor, normalize_agent_output
 
 
 def main() -> None:
@@ -30,8 +30,9 @@ def main() -> None:
             continue
         result = agent.invoke({"input": user_input, "chat_history": []})
         out = result.get("output")
-        if out is not None and str(out).strip() != "":
-            print(out)
+        text = normalize_agent_output(out)
+        if text:
+            print(text)
         else:
             print("No text output; full result:", result, file=sys.stderr)
 
