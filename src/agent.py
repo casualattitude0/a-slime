@@ -192,6 +192,52 @@ def should_escalate_to_gemini(user_message: str, history_message_count: int) -> 
         return False
 
 
+def local_quick_reply(user_message: str, history_message_count: int) -> str | None:
+    """Use local Ollama model to decide simple-vs-complex and optionally answer directly."""
+    root = _project_root()
+    load_dotenv(root / ".env")
+    enabled = (os.environ.get("AGENT_LOCAL_ROUTER_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        return None
+    if not (os.environ.get("OLLAMA_MODEL") or "").strip():
+        return None
+    msg = (user_message or "").strip()
+    if not msg:
+        return None
+
+    llm = make_ollama_llm()
+    router_prompt = (
+        "You are a lightweight local router.\n"
+        "Task:\n"
+        "1) Decide whether the user's message is SIMPLE.\n"
+        "2) If SIMPLE, provide a direct short answer without tools.\n"
+        "3) If COMPLEX, do not answer.\n\n"
+        "SIMPLE means it can be answered directly without web search, document retrieval, "
+        "or long multi-step reasoning.\n\n"
+        "Return JSON only, no markdown:\n"
+        '{"simple": true, "reply": "..."}\n'
+        "or\n"
+        '{"simple": false}\n\n'
+        f"history_message_count={history_message_count}\n"
+        f"User message:\n{msg[:4000]}"
+    )
+    try:
+        resp = llm.invoke(router_prompt)
+        text = str(getattr(resp, "content", None) or resp).strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        m = re.search(r"\{[\s\S]*\}", text)
+        chunk = m.group(0) if m else text
+        data = json.loads(chunk)
+        if bool(data.get("simple")):
+            reply = str(data.get("reply") or "").strip()
+            return reply or None
+        return None
+    except Exception:
+        return None
+
+
 class _PrefetchExecutor:
     """Delegates to AgentExecutor; optional prefetch merges retriever chunks into input."""
 

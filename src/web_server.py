@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import os
 import queue
+import re
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -24,6 +26,7 @@ from src.agent import (
     delete_rag_item,
     invoke_executor,
     list_rag_items,
+    local_quick_reply,
     make_gemini_llm,
     make_ollama_llm,
     normalize_agent_output,
@@ -47,6 +50,90 @@ def _trim_session(msgs: list[BaseMessage]) -> None:
     if len(msgs) <= _MAX_SESSION_MESSAGES:
         return
     del msgs[: len(msgs) - _MAX_SESSION_MESSAGES]
+
+
+def _safe_eval_math(expr: str) -> str | None:
+    s = (expr or "").strip()
+    if not s or len(s) > 80:
+        return None
+    if not re.fullmatch(r"[0-9\.\s\+\-\*\/\%\(\)]+", s):
+        return None
+    try:
+        node = ast.parse(s, mode="eval")
+    except Exception:
+        return None
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.Pow,
+        ast.FloorDiv,
+    )
+    if any(not isinstance(n, allowed_nodes) for n in ast.walk(node)):
+        return None
+
+    def _eval(n: ast.AST) -> float:
+        if isinstance(n, ast.Expression):
+            return _eval(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return float(n.value)
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
+            v = _eval(n.operand)
+            return v if isinstance(n.op, ast.UAdd) else -v
+        if isinstance(n, ast.BinOp):
+            l = _eval(n.left)
+            r = _eval(n.right)
+            if isinstance(n.op, ast.Add):
+                return l + r
+            if isinstance(n.op, ast.Sub):
+                return l - r
+            if isinstance(n.op, ast.Mult):
+                return l * r
+            if isinstance(n.op, ast.Div):
+                return l / r
+            if isinstance(n.op, ast.Mod):
+                return l % r
+            if isinstance(n.op, ast.FloorDiv):
+                return l // r
+            if isinstance(n.op, ast.Pow):
+                return l**r
+        raise ValueError("Unsupported expression")
+
+    try:
+        out = _eval(node)
+    except Exception:
+        return None
+    if float(out).is_integer():
+        return str(int(out))
+    return str(out)
+
+
+def _simple_local_reply(message: str) -> str | None:
+    msg = (message or "").strip()
+    if not msg:
+        return None
+
+    math_result = _safe_eval_math(msg)
+    if math_result is not None:
+        return math_result
+
+    low = msg.lower()
+    if low in {"hi", "hello", "hey", "嗨", "你好", "哈囉"}:
+        return "你好"
+    if low in {"thanks", "thank you", "謝謝", "感謝"}:
+        return "不客氣"
+    if low in {"bye", "掰掰", "再見"}:
+        return "再見"
+    return None
 
 
 # ─── Request / Response models ────────────────────────────────────────────────
@@ -232,21 +319,28 @@ async def chat(req: ChatRequest) -> ChatResponse:
             registry.update_session(version.version_id, sid)
 
         hist = sessions[sid]
-        history_for_prompt = list(hist)
-        executor = _get_executor(app, version.version_id, msg, len(hist))
+        local_reply = _simple_local_reply(msg)
+        if local_reply is None:
+            local_reply = await asyncio.to_thread(local_quick_reply, msg, len(hist))
+        if local_reply is not None:
+            reply = local_reply
+            err = None
+        else:
+            history_for_prompt = list(hist)
+            executor = _get_executor(app, version.version_id, msg, len(hist))
 
-        try:
-            result = await asyncio.to_thread(
-                invoke_executor,
-                executor,
-                {"input": msg, "chat_history": history_for_prompt},
-            )
-        except Exception as exc:
-            return ChatResponse(reply="", session_id=sid, error=str(exc))
+            try:
+                result = await asyncio.to_thread(
+                    invoke_executor,
+                    executor,
+                    {"input": msg, "chat_history": history_for_prompt},
+                )
+            except Exception as exc:
+                return ChatResponse(reply="", session_id=sid, error=str(exc))
 
-        out = result.get("output")
-        reply = normalize_agent_output(out)
-        err = None if reply else f"No text output; full result: {result!r}"
+            out = result.get("output")
+            reply = normalize_agent_output(out)
+            err = None if reply else f"No text output; full result: {result!r}"
 
         hist.append(HumanMessage(content=msg))
         hist.append(AIMessage(content=reply if reply else err or ""))
@@ -277,9 +371,35 @@ async def chat_stream(req: ChatRequest):
             registry.update_session(version.version_id, sid)
 
         hist = sessions[sid]
-        history_for_prompt = list(hist)
-        executor = _get_executor(app, version.version_id, msg, len(hist))
-        payload = {"input": msg, "chat_history": history_for_prompt}
+        local_reply = _simple_local_reply(msg)
+        if local_reply is None:
+            local_reply = await asyncio.to_thread(local_quick_reply, msg, len(hist))
+        if local_reply is None:
+            history_for_prompt = list(hist)
+            executor = _get_executor(app, version.version_id, msg, len(hist))
+            payload = {"input": msg, "chat_history": history_for_prompt}
+        else:
+            executor = None
+            payload = {}
+
+    if local_reply is not None:
+        async def local_ndjson_gen():
+            async with lock:
+                hist2 = sessions.get(sid, [])
+                hist2.append(HumanMessage(content=msg))
+                hist2.append(AIMessage(content=local_reply))
+                _trim_session(hist2)
+            yield json.dumps(
+                {
+                    "event": "done",
+                    "reply": local_reply,
+                    "session_id": sid,
+                    "error": None,
+                },
+                ensure_ascii=False,
+            ) + "\n"
+
+        return StreamingResponse(local_ndjson_gen(), media_type="application/x-ndjson")
 
     q: queue.Queue[tuple[str, Any]] = queue.Queue()
     box: dict[str, Any] = {}
