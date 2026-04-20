@@ -33,4 +33,3 @@ Priority order:
 2. User intent fidelity
 3. Completion speed
 4. Minimal change surface
-
