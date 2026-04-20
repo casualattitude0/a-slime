@@ -12,6 +12,7 @@ const emit = defineEmits<{
 
 const input = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const isComposingWithIME = ref(false)
 
 const adjustHeight = () => {
   if (!textareaRef.value) return
@@ -20,10 +21,20 @@ const adjustHeight = () => {
 }
 
 const handleKeydown = (e: KeyboardEvent) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  const stillComposing = isComposingWithIME.value || e.isComposing || e.keyCode === 229
+  const isCmdEnterOnly = e.key === 'Enter' && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+  if (isCmdEnterOnly && !stillComposing) {
     e.preventDefault()
     send()
   }
+}
+
+const handleCompositionStart = () => {
+  isComposingWithIME.value = true
+}
+
+const handleCompositionEnd = () => {
+  isComposingWithIME.value = false
 }
 
 const send = () => {
@@ -54,6 +65,8 @@ onMounted(() => {
       :disabled="disabled"
       @input="adjustHeight"
       @keydown="handleKeydown"
+      @compositionstart="handleCompositionStart"
+      @compositionend="handleCompositionEnd"
       rows="1"
     ></textarea>
     
