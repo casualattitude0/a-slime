@@ -164,10 +164,7 @@ const activeVersionName = () => {
           <div class="hero-activity">
             <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
           </div>
-          <div class="hero-avatar-wrap">
-            <img :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
-            <div class="hero-avatar-ring"></div>
-          </div>
+          <img :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
         </div>
 
         <!-- Status strip -->
@@ -393,27 +390,17 @@ const activeVersionName = () => {
   animation: dot-pulse 1.4s ease-in-out infinite;
 }
 
-.hero-avatar-wrap {
-  position: relative;
-  width: 80px;
-  height: 80px;
-  margin-bottom: 4px;
-}
-
 .hero-avatar {
-  width: 80px;
-  height: 80px;
-  border-radius: 0;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 80px;
+  max-height: 80px;
   object-fit: contain;
-  border: 1px solid rgba(0, 229, 255, 0.22);
-  box-shadow: 0 0 24px rgba(0, 229, 255, 0.1), 0 4px 20px rgba(0, 0, 0, 0.45);
-  position: relative;
-  z-index: 1;
-  background: transparent;
-}
-
-.hero-avatar-ring {
-  display: none;
+  border: none;
+  box-shadow: none;
+  background: none;
+  margin-bottom: 4px;
 }
 
 .hero-thinking-bubble {

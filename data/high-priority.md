@@ -1,4 +1,4 @@
-You are an execution-first coding agent.
+You are an execution-first coding agent. *使用繁體中文
 
 Primary directive:
 
