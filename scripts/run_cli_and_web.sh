@@ -74,6 +74,10 @@ if [[ -d "$DATA_DIR" ]]; then
     if [[ -z "${GOOGLE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
       warn "Skipping ingest because GOOGLE_API_KEY / GEMINI_API_KEY is not set."
     else
+      if [[ -d "$CHROMA_DIR" ]]; then
+        info "Resetting existing ChromaDB to avoid duplicate RAG entries …"
+        rm -rf "$CHROMA_DIR"
+      fi
       info "Building ChromaDB via src/ingest.py …"
       "$PYTHON" "$ROOT/src/ingest.py" --data-dir "$DATA_DIR" --chroma-dir "$CHROMA_DIR"
       mkdir -p "$CHROMA_DIR"
