@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,6 +26,25 @@ def _require_google_key() -> str | None:
 
 def _embedding_model_name() -> str:
     return os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "resource_exhausted" in text or "429" in text or "rate limit" in text
+
+
+def _ingest_retry_attempts() -> int:
+    try:
+        return max(1, int((os.environ.get("INGEST_RETRY_ATTEMPTS") or "3").strip()))
+    except ValueError:
+        return 3
+
+
+def _ingest_retry_base_seconds() -> float:
+    try:
+        return max(0.1, float((os.environ.get("INGEST_RETRY_BASE_SECONDS") or "2").strip()))
+    except ValueError:
+        return 2.0
 
 
 def ingest(data_dir: Path, chroma_dir: Path, chunk_size: int, chunk_overlap: int) -> int:
@@ -71,11 +91,31 @@ def ingest(data_dir: Path, chroma_dir: Path, chunk_size: int, chunk_overlap: int
         google_api_key=api_key,
     )
     chroma_dir.mkdir(parents=True, exist_ok=True)
-    Chroma.from_documents(
-        documents=splits,
-        embedding=embeddings,
-        persist_directory=str(chroma_dir),
-    )
+    attempts = _ingest_retry_attempts()
+    base_delay = _ingest_retry_base_seconds()
+    for attempt in range(1, attempts + 1):
+        try:
+            Chroma.from_documents(
+                documents=splits,
+                embedding=embeddings,
+                persist_directory=str(chroma_dir),
+            )
+            break
+        except Exception as exc:
+            if attempt >= attempts or not _is_rate_limit_error(exc):
+                print(
+                    "Embedding ingest failed: "
+                    f"{exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            delay = base_delay * (2 ** (attempt - 1))
+            print(
+                "Embedding provider rate-limited (429/RESOURCE_EXHAUSTED). "
+                f"Retrying in {delay:.1f}s ({attempt}/{attempts})...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
     print(
         f"Ingested {len(docs)} document(s) into {len(splits)} chunk(s) at {chroma_dir} "
         f"(embedding model: {embed_model})"

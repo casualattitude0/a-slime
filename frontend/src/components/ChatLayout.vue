@@ -62,6 +62,13 @@ const handleClear = () => {
   }
 }
 
+const handleFeedback = async (rating: number, messageRef?: string) => {
+  const sid = chatStore.sessionId
+  if (!sid || !messageRef) return
+  const comment = prompt('Optional feedback comment:') ?? ''
+  await chatStore.submitFeedback({ sessionId: sid, messageRef, rating, comment })
+}
+
 const activeVersionName = () => {
   const v = versions.value.find((v) => v.version_id === activeVersionId.value)
   return v?.name ?? '—'
@@ -136,11 +143,15 @@ const activeVersionName = () => {
               :key="i"
               :role="msg.role"
               :text="msg.text"
+              :message-ref="msg.messageRef"
+              :feedback-status="msg.feedbackStatus"
+              :feedback-rating="msg.feedbackRating"
               :llm-error="msg.llmError"
               :show-actions="pendingLLMError?.messageIndex === i"
               :streaming="streamingBotIndex === i"
               @fix-issue="chatStore.fixIssue()"
               @answer-immediately="chatStore.answerImmediately()"
+              @feedback="(rating) => handleFeedback(rating, msg.messageRef)"
             />
           </div>
         </div>

@@ -9,6 +9,9 @@ const props = defineProps<{
   role: 'user' | 'bot' | 'err' | 'thought'
   text: string
   llmError?: LLMErrorPayload
+  messageRef?: string
+  feedbackStatus?: 'idle' | 'pending' | 'submitted' | 'failed'
+  feedbackRating?: number
   showActions?: boolean
   streaming?: boolean
 }>()
@@ -16,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'fix-issue'): void
   (e: 'answer-immediately'): void
+  (e: 'feedback', rating: number): void
 }>()
 
 const md = new MarkdownIt({
@@ -72,6 +76,17 @@ const roleLabel = computed(() => {
       >
         <span v-if="streaming">{{ text }}</span>
         <span v-else v-html="renderedText"></span>
+        <div v-if="!streaming && messageRef" class="feedback-actions">
+          <template v-if="feedbackStatus === 'submitted'">
+            <span class="feedback-state">Feedback saved ({{ feedbackRating === 5 ? 'Helpful' : 'Not helpful' }})</span>
+          </template>
+          <template v-else>
+            <button class="feedback-btn" :disabled="feedbackStatus === 'pending'" @click="emit('feedback', 5)">Helpful</button>
+            <button class="feedback-btn" :disabled="feedbackStatus === 'pending'" @click="emit('feedback', 1)">Not helpful</button>
+            <span v-if="feedbackStatus === 'pending'" class="feedback-state">Sending...</span>
+            <span v-else-if="feedbackStatus === 'failed'" class="feedback-state feedback-state--error">Send failed, try again.</span>
+          </template>
+        </div>
       </div>
       <div v-else-if="role === 'err'" class="bubble-err">
         <span>{{ text }}</span>
@@ -240,6 +255,42 @@ const roleLabel = computed(() => {
   color: var(--text);
   line-height: 1.65;
   word-break: break-words;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.feedback-btn {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.feedback-btn:hover {
+  color: var(--accent);
+  border-color: rgba(0, 229, 255, 0.25);
+}
+
+.feedback-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.feedback-state {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+
+.feedback-state--error {
+  color: var(--error);
 }
 
 /* ── Thought avatar ──────────────────────────────────── */

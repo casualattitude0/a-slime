@@ -36,6 +36,12 @@ from src.agent import (
     should_escalate_to_gemini,
 )
 from src.chat_registry import ChatRegistry
+from src.data_collection import (
+    read_recent_agent_events,
+    read_recent_feedback,
+    write_agent_event,
+    write_feedback,
+)
 from src.history_store import (
     append_message,
     clear_session_messages,
@@ -64,10 +70,12 @@ def _trim_session(msgs: list[BaseMessage]) -> None:
     del msgs[: len(msgs) - _MAX_SESSION_MESSAGES]
 
 
-def _persist_message(app: FastAPI, sid: str, msg: BaseMessage, version_id: str | None = None) -> None:
+def _persist_message(
+    app: FastAPI, sid: str, msg: BaseMessage, version_id: str | None = None
+) -> str | None:
     """Append a message to the Chroma history store asynchronously-safe (sync call)."""
     try:
-        append_message(
+        return append_message(
             app.state.chroma_dir,
             app.state.embeddings,
             sid,
@@ -75,7 +83,7 @@ def _persist_message(app: FastAPI, sid: str, msg: BaseMessage, version_id: str |
             version_id=version_id,
         )
     except Exception:
-        pass
+        return None
 
 
 def _persist_trim(app: FastAPI, sid: str) -> None:
@@ -96,6 +104,27 @@ def _load_session_from_store(app: FastAPI, sid: str) -> list[BaseMessage]:
         return load_session_messages(app.state.chroma_dir, app.state.embeddings, sid)
     except Exception:
         return []
+
+
+def _record_agent_event(
+    *,
+    event_type: str,
+    session_id: str,
+    version_id: str | None = None,
+    request_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    try:
+        write_agent_event(
+            _ROOT,
+            event_type=event_type,
+            session_id=session_id,
+            version_id=version_id,
+            request_id=request_id,
+            payload=payload,
+        )
+    except Exception:
+        pass
 
 
 def _safe_eval_math(expr: str) -> str | None:
@@ -193,6 +222,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str = ""
     session_id: str = ""
+    message_ref: str | None = None
     error: str | None = None
     llm_error: dict | None = None
 
@@ -216,6 +246,13 @@ class VersionCreateRequest(BaseModel):
 
 class DeleteAllRequest(BaseModel):
     confirm_token: str
+
+
+class FeedbackRequest(BaseModel):
+    session_id: str
+    message_ref: str
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = None
 
 
 # ─── Executor helpers ─────────────────────────────────────────────────────────
@@ -396,6 +433,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     async with lock:
         version = registry.get_active()
+        request_id = str(uuid.uuid4())
         chat_reg_c: ChatRegistry = app.state.chat_registry
         sid: str
         if req.session_id and req.session_id in sessions:
@@ -414,10 +452,18 @@ async def chat(req: ChatRequest) -> ChatResponse:
             chat_reg_c.ensure(sid, version.version_id)
 
         hist = sessions[sid]
+        _record_agent_event(
+            event_type="chat_request",
+            session_id=sid,
+            version_id=version.version_id,
+            request_id=request_id,
+            payload={"input_text": msg, "llm_mode": req.llm_mode},
+        )
         local_reply = _simple_local_reply(msg)
         if local_reply is None:
             local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
-        if local_reply is not None:
+        used_local_reply = local_reply is not None
+        if used_local_reply:
             reply = local_reply
             err = None
         else:
@@ -444,9 +490,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
                     await asyncio.to_thread(_persist_message, app, sid, human_msg, version.version_id)
                     await asyncio.to_thread(_persist_message, app, sid, ai_msg, version.version_id)
                     await asyncio.to_thread(_persist_trim, app, sid)
+                    _record_agent_event(
+                        event_type="chat_error",
+                        session_id=sid,
+                        version_id=version.version_id,
+                        request_id=request_id,
+                        payload={"error": llm_err_info.message, "route": "agent"},
+                    )
                     return ChatResponse(
                         reply="",
                         session_id=sid,
+                        message_ref=None,
                         error=llm_err_info.message,
                         llm_error=llm_err_info.to_dict(),
                     )
@@ -462,13 +516,26 @@ async def chat(req: ChatRequest) -> ChatResponse:
         hist.append(ai_msg)
         _trim_session(hist)
         await asyncio.to_thread(_persist_message, app, sid, human_msg, version.version_id)
-        await asyncio.to_thread(_persist_message, app, sid, ai_msg, version.version_id)
+        ai_message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_msg, version.version_id)
         await asyncio.to_thread(_persist_trim, app, sid)
         # Auto-title from first user message.
         await asyncio.to_thread(chat_reg_c.set_title_if_default, sid, msg)
         await asyncio.to_thread(chat_reg_c.touch, sid)
 
-        return ChatResponse(reply=reply, session_id=sid, error=err)
+        _record_agent_event(
+            event_type="chat_done" if not err else "chat_error",
+            session_id=sid,
+            version_id=version.version_id,
+            request_id=request_id,
+            payload={
+                "reply_text": reply,
+                "error": err,
+                "message_ref": ai_message_ref or "",
+                "route": "local" if used_local_reply else "agent",
+            },
+        )
+
+        return ChatResponse(reply=reply, session_id=sid, message_ref=ai_message_ref, error=err)
 
 
 async def _resolve_session(
@@ -526,13 +593,22 @@ async def _resolve_session(
             local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
 
         if local_reply is not None:
-            return sid, list(hist), None, {"local_reply": local_reply}, cancel_event
+            return (
+                sid,
+                list(hist),
+                None,
+                {
+                    "local_reply": local_reply,
+                    "version_id": version.version_id,
+                },
+                cancel_event,
+            )
 
         history_for_prompt = list(hist)
         executor = _get_executor_for_llm_mode(
             app, version.version_id, msg, len(hist), llm_mode
         )
-        payload = {"input": msg, "chat_history": history_for_prompt}
+        payload = {"input": msg, "chat_history": history_for_prompt, "version_id": version.version_id}
         return sid, history_for_prompt, executor, payload, cancel_event
 
 
@@ -556,6 +632,14 @@ async def _stream_pipeline(
     lock: asyncio.Lock = app.state.lock
     sessions: dict[str, list[BaseMessage]] = app.state.sessions
     request_id = str(uuid.uuid4())
+    version_id_for_events = str(payload.get("version_id") or "")
+    _record_agent_event(
+        event_type="chat_request",
+        session_id=sid,
+        version_id=version_id_for_events,
+        request_id=request_id,
+        payload={"input_text": msg, "transport": "stream"},
+    )
     yield {"event": "start", "session_id": sid, "request_id": request_id}
     yield {"event": "status", "phase": "route_deciding", "label": "路由決策中"}
 
@@ -573,6 +657,13 @@ async def _stream_pipeline(
 
         if ev_name == "_cancelled":
             terminated = True
+            _record_agent_event(
+                event_type="chat_terminated",
+                session_id=sid,
+                version_id=version_id_for_events,
+                request_id=request_id,
+                payload={},
+            )
             break
 
         if ev_name == "_error":
@@ -583,6 +674,13 @@ async def _stream_pipeline(
                 llm_error_payload = err_info.to_dict()
             else:
                 err = str(exc)
+            _record_agent_event(
+                event_type="chat_error",
+                session_id=sid,
+                version_id=version_id_for_events,
+                request_id=request_id,
+                payload={"error": err},
+            )
             break
 
         if ev_name == "_done":
@@ -595,12 +693,28 @@ async def _stream_pipeline(
 
         if ev_name == "delta":
             reply += ev.get("text", "")
+            _record_agent_event(
+                event_type="stream_delta",
+                session_id=sid,
+                version_id=version_id_for_events,
+                request_id=request_id,
+                payload={"text": ev.get("text", "")},
+            )
+
+        if ev_name == "status":
+            _record_agent_event(
+                event_type="status",
+                session_id=sid,
+                version_id=version_id_for_events,
+                request_id=request_id,
+                payload={"phase": ev.get("phase", ""), "label": ev.get("label", "")},
+            )
 
         yield ev  # forward status and delta to client
 
     registry: VersionRegistry = app.state.version_registry
     chat_reg_p: ChatRegistry = app.state.chat_registry
-    version_id_for_history = (registry.get_active() or registry.get_active()).version_id
+    version_id_for_history = version_id_for_events or registry.get_active().version_id
 
     yield {"event": "status", "phase": "history_persisting", "label": "儲存對話紀錄"}
 
@@ -609,19 +723,33 @@ async def _stream_pipeline(
         human_msg = HumanMessage(content=msg)
         hist2.append(human_msg)
         await asyncio.to_thread(_persist_message, app, sid, human_msg, version_id_for_history)
+        ai_message_ref = None
         if not terminated:
             ai_msg = AIMessage(content=reply if reply else err or "")
             hist2.append(ai_msg)
-            await asyncio.to_thread(_persist_message, app, sid, ai_msg, version_id_for_history)
+            ai_message_ref = await asyncio.to_thread(
+                _persist_message, app, sid, ai_msg, version_id_for_history
+            )
         _trim_session(hist2)
         await asyncio.to_thread(_persist_trim, app, sid)
         await asyncio.to_thread(chat_reg_p.set_title_if_default, sid, msg)
         await asyncio.to_thread(chat_reg_p.touch, sid)
 
+    if not terminated:
+        _record_agent_event(
+            event_type="chat_done" if not err else "chat_error",
+            session_id=sid,
+            version_id=version_id_for_history,
+            request_id=request_id,
+            payload={"reply_text": reply, "error": err, "message_ref": ai_message_ref or ""},
+        )
+
     yield {
         "event": "done",
         "reply": reply,
         "session_id": sid,
+        "request_id": request_id,
+        "message_ref": ai_message_ref if not terminated else None,
         "terminated": terminated,
         "error": err,
         "llm_error": llm_error_payload,
@@ -641,12 +769,21 @@ async def chat_stream(req: ChatRequest):
     # Fast local reply path.
     if executor is None:
         local_reply: str = payload["local_reply"]  # type: ignore[index]
+        version_id = str(payload.get("version_id") or "")
 
         async def _local_gen():
             lock: asyncio.Lock = app.state.lock
             sessions: dict[str, list[BaseMessage]] = app.state.sessions
             registry_lr: VersionRegistry = app.state.version_registry
-            vid_lr = registry_lr.get_active().version_id
+            vid_lr = version_id or registry_lr.get_active().version_id
+            request_id = str(uuid.uuid4())
+            _record_agent_event(
+                event_type="chat_request",
+                session_id=sid,
+                version_id=vid_lr,
+                request_id=request_id,
+                payload={"input_text": msg, "transport": "stream-local"},
+            )
             async with lock:
                 hist2 = sessions.get(sid, [])
                 human_m = HumanMessage(content=msg)
@@ -655,14 +792,23 @@ async def chat_stream(req: ChatRequest):
                 hist2.append(ai_m)
                 _trim_session(hist2)
                 await asyncio.to_thread(_persist_message, app, sid, human_m, vid_lr)
-                await asyncio.to_thread(_persist_message, app, sid, ai_m, vid_lr)
+                message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_m, vid_lr)
                 await asyncio.to_thread(_persist_trim, app, sid)
+            _record_agent_event(
+                event_type="chat_done",
+                session_id=sid,
+                version_id=vid_lr,
+                request_id=request_id,
+                payload={"reply_text": local_reply, "message_ref": message_ref or "", "route": "local"},
+            )
             yield (
                 json.dumps(
                     {
                         "event": "done",
                         "reply": local_reply,
                         "session_id": sid,
+                        "request_id": request_id,
+                        "message_ref": message_ref,
                         "terminated": False,
                         "error": None,
                         "llm_error": None,
@@ -729,10 +875,19 @@ async def ws_chat_live(websocket: WebSocket):
             # Fast local reply path.
             if executor is None:
                 local_reply: str = payload["local_reply"]  # type: ignore[index]
+                version_id = str(payload.get("version_id") or "")
                 lock: asyncio.Lock = app.state.lock
                 sessions: dict[str, list[BaseMessage]] = app.state.sessions
                 registry_ws: VersionRegistry = app.state.version_registry
-                vid_ws = registry_ws.get_active().version_id
+                vid_ws = version_id or registry_ws.get_active().version_id
+                request_id = str(uuid.uuid4())
+                _record_agent_event(
+                    event_type="chat_request",
+                    session_id=sid,
+                    version_id=vid_ws,
+                    request_id=request_id,
+                    payload={"input_text": msg, "transport": "ws-local"},
+                )
                 async with lock:
                     hist2 = sessions.get(sid, [])
                     human_mw = HumanMessage(content=msg)
@@ -741,14 +896,23 @@ async def ws_chat_live(websocket: WebSocket):
                     hist2.append(ai_mw)
                     _trim_session(hist2)
                     await asyncio.to_thread(_persist_message, app, sid, human_mw, vid_ws)
-                    await asyncio.to_thread(_persist_message, app, sid, ai_mw, vid_ws)
+                    message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_mw, vid_ws)
                     await asyncio.to_thread(_persist_trim, app, sid)
+                _record_agent_event(
+                    event_type="chat_done",
+                    session_id=sid,
+                    version_id=vid_ws,
+                    request_id=request_id,
+                    payload={"reply_text": local_reply, "message_ref": message_ref or "", "route": "local"},
+                )
                 await websocket.send_text(
                     json.dumps(
                         {
                             "event": "done",
                             "reply": local_reply,
                             "session_id": sid,
+                            "request_id": request_id,
+                            "message_ref": message_ref,
                             "terminated": False,
                             "error": None,
                             "llm_error": None,
@@ -796,6 +960,14 @@ async def chat_fallback(req: ChatRequest) -> ChatResponse:
         hist = list(sessions[sid])
 
     ollama_ex = getattr(app.state, "executor_ollama", None)
+    request_id = str(uuid.uuid4())
+    _record_agent_event(
+        event_type="chat_request",
+        session_id=sid,
+        version_id="",
+        request_id=request_id,
+        payload={"input_text": msg, "route": "fallback"},
+    )
     if ollama_ex is None:
         return ChatResponse(
             reply="本地模型（Ollama）不可用。請檢查 API 配額或帳單後重試。",
@@ -820,10 +992,17 @@ async def chat_fallback(req: ChatRequest) -> ChatResponse:
         ai_msg_fb = AIMessage(content=reply if reply else err or "")
         hist2.append(ai_msg_fb)
         _trim_session(hist2)
-        await asyncio.to_thread(_persist_message, app, sid, ai_msg_fb, None)
+        message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_msg_fb, None)
         await asyncio.to_thread(_persist_trim, app, sid)
 
-    return ChatResponse(reply=reply, session_id=sid, error=err)
+    _record_agent_event(
+        event_type="chat_done" if not err else "chat_error",
+        session_id=sid,
+        version_id="",
+        request_id=request_id,
+        payload={"reply_text": reply, "error": err, "message_ref": message_ref or "", "route": "fallback"},
+    )
+    return ChatResponse(reply=reply, session_id=sid, message_ref=message_ref, error=err)
 
 
 @app.post("/api/clear")
@@ -1118,6 +1297,31 @@ async def delete_all_data(req: DeleteAllRequest) -> dict[str, Any]:
     app.state.sessions.clear()
     app.state.executor_cache.clear()
     return {"ok": True}
+
+
+@app.post("/api/feedback")
+async def submit_feedback(req: FeedbackRequest) -> dict[str, Any]:
+    feedback_id = await asyncio.to_thread(
+        write_feedback,
+        _ROOT,
+        session_id=req.session_id,
+        message_ref=req.message_ref,
+        rating=req.rating,
+        comment=req.comment,
+    )
+    return {"ok": True, "feedback_id": feedback_id}
+
+
+@app.get("/api/telemetry/agent-events")
+async def get_agent_events(limit: int = 50) -> dict[str, Any]:
+    items = await asyncio.to_thread(read_recent_agent_events, _ROOT, limit=limit)
+    return {"items": items}
+
+
+@app.get("/api/telemetry/feedback")
+async def get_feedback_items(limit: int = 50) -> dict[str, Any]:
+    items = await asyncio.to_thread(read_recent_feedback, _ROOT, limit=limit)
+    return {"items": items}
 
 
 def main() -> None:

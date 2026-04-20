@@ -439,17 +439,22 @@ def build_executor(
     if rag_count == 0:
         data_dir = root / "data"
         if _has_supported_data_files(data_dir):
-            run_ingest(
-                data_dir=data_dir.resolve(),
-                chroma_dir=chroma_path.resolve(),
-                chunk_size=1000,
-                chunk_overlap=200,
-            )
-            vectorstore = Chroma(
-                persist_directory=str(chroma_path),
-                embedding_function=embeddings,
-                collection_name=rag_collection,
-            )
+            try:
+                ingest_rc = run_ingest(
+                    data_dir=data_dir.resolve(),
+                    chroma_dir=chroma_path.resolve(),
+                    chunk_size=1000,
+                    chunk_overlap=200,
+                )
+                if ingest_rc == 0:
+                    vectorstore = Chroma(
+                        persist_directory=str(chroma_path),
+                        embedding_function=embeddings,
+                        collection_name=rag_collection,
+                    )
+            except Exception:
+                # Keep startup alive even if embedding provider is rate-limited.
+                pass
     retriever = vectorstore.as_retriever(search_kwargs={"k": retriever_k})
 
     def _run_document_search(query: str) -> str:

@@ -43,7 +43,7 @@ def append_message(
     message: BaseMessage,
     *,
     version_id: str | None = None,
-) -> None:
+) -> str:
     """Persist a single message to the history collection."""
     store = _make_store(chroma_dir, embeddings)
     collection = store._collection
@@ -71,6 +71,7 @@ def append_message(
         documents=[content],
         metadatas=[metadata],
     )
+    return doc_id
 
 
 def load_session_messages(

@@ -12,6 +12,9 @@ export interface Message {
   role: 'user' | 'bot' | 'err' | 'thought'
   text: string
   llmError?: LLMErrorPayload
+  messageRef?: string
+  feedbackStatus?: 'idle' | 'pending' | 'submitted' | 'failed'
+  feedbackRating?: number
 }
 
 export interface VersionEntry {
@@ -134,7 +137,12 @@ export const useChatStore = defineStore('chat', () => {
           pendingLLMError.value = { messageIndex: idx, payload: llmErr, originalText }
         }
       } else if (obj.reply) {
-        messages.value.push({ role: 'bot', text: obj.reply })
+        messages.value.push({
+          role: 'bot',
+          text: obj.reply,
+          messageRef: obj.message_ref || undefined,
+          feedbackStatus: 'idle',
+        })
       }
       streamingBotIndex.value = -1
       streamingReply.value = ''
@@ -612,6 +620,40 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function submitFeedback(payload: {
+    sessionId: string
+    messageRef: string
+    rating: number
+    comment?: string
+  }): Promise<boolean> {
+    const msg = messages.value.find((m) => m.messageRef === payload.messageRef)
+    if (msg) {
+      msg.feedbackStatus = 'pending'
+    }
+    try {
+      const res = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: payload.sessionId,
+          message_ref: payload.messageRef,
+          rating: payload.rating,
+          comment: payload.comment ?? '',
+        }),
+      })
+      if (msg) {
+        msg.feedbackStatus = res.ok ? 'submitted' : 'failed'
+        msg.feedbackRating = res.ok ? payload.rating : undefined
+      }
+      return res.ok
+    } catch {
+      if (msg) {
+        msg.feedbackStatus = 'failed'
+      }
+      return false
+    }
+  }
+
   return {
     messages,
     sessionId,
@@ -646,6 +688,7 @@ export const useChatStore = defineStore('chat', () => {
     deleteRagItem,
     deleteAllRag,
     deleteAllData,
+    submitFeedback,
     fetchChats,
     createNewChat,
     switchToChat,
