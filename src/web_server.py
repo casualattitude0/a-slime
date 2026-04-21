@@ -31,7 +31,6 @@ from src.agent import (
     invoke_executor,
     list_rag_items,
     agent_mode_reply,
-    local_quick_reply,
     make_gemini_llm,
     make_ollama_llm,
     normalize_agent_output,
@@ -245,6 +244,72 @@ def _vague_short_clarify_reply(message: str) -> str | None:
     return None
 
 
+def _normalize_generated_chat_title(raw: str) -> str:
+    title = (raw or "").strip()
+    if not title:
+        return ""
+    title = title.splitlines()[0].strip()
+    title = title.strip("`'\"")
+    title = re.sub(r"^[#*\-\d\.\)\s]+", "", title).strip()
+    title = re.sub(r"\s+", " ", title)
+    return title[:60].strip()
+
+
+def _generate_chat_title_with_second_agent(first_message: str) -> str | None:
+    msg = (first_message or "").strip()
+    if not msg:
+        return None
+    prompt = (
+        "Generate one concise chat title from the user message.\n"
+        "Rules:\n"
+        "- Output title text only.\n"
+        "- Single line.\n"
+        "- <= 60 characters.\n"
+        "- Keep original language when possible.\n\n"
+        f"User message:\n{msg[:1000]}"
+    )
+    try:
+        llm = make_gemini_llm()
+        resp = llm.invoke(prompt)
+        text = str(getattr(resp, "content", None) or resp)
+        normalized = _normalize_generated_chat_title(text)
+        return normalized or None
+    except Exception:
+        return None
+
+
+async def _update_title_after_first_message(
+    app: FastAPI,
+    sid: str,
+    first_message: str,
+) -> str | None:
+    chat_reg: ChatRegistry = app.state.chat_registry
+    entry = await asyncio.to_thread(chat_reg.get, sid)
+    if entry is None:
+        return None
+    if entry.title != "New Chat":
+        return entry.title
+
+    generated: str | None = None
+    try:
+        generated = await asyncio.wait_for(
+            asyncio.to_thread(_generate_chat_title_with_second_agent, first_message),
+            timeout=1.5,
+        )
+    except asyncio.TimeoutError:
+        generated = None
+    applied_title: str | None = None
+    if generated:
+        applied_title = await asyncio.to_thread(
+            chat_reg.set_generated_title_if_default, sid, generated
+        )
+    if not applied_title:
+        await asyncio.to_thread(chat_reg.set_title_if_default, sid, first_message)
+        refreshed = await asyncio.to_thread(chat_reg.get, sid)
+        applied_title = refreshed.title if refreshed else None
+    return applied_title
+
+
 # ─── Request / Response models ────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
@@ -257,6 +322,7 @@ class ChatResponse(BaseModel):
     reply: str = ""
     session_id: str = ""
     message_ref: str | None = None
+    chat_title: str | None = None
     error: str | None = None
     llm_error: dict | None = None
 
@@ -502,12 +568,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
         )
         if req.llm_mode == "agent":
             local_reply = agent_mode_reply(msg, hist)
+        elif req.llm_mode == "gemini":
+            local_reply = None
         else:
             local_reply = _simple_local_reply(msg)
             if local_reply is None:
                 local_reply = _vague_short_clarify_reply(msg)
-            if local_reply is None and not _requires_live_time_lookup(msg):
-                local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
         used_local_reply = local_reply is not None
         if used_local_reply:
             reply = local_reply
@@ -565,8 +631,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         ai_message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_msg, version.version_id)
         await asyncio.to_thread(_persist_trim, app, sid)
         # Auto-title from first user message.
-        await asyncio.to_thread(chat_reg_c.set_title_if_default, sid, msg)
-        await asyncio.to_thread(chat_reg_c.touch, sid)
+        chat_title = await _update_title_after_first_message(app, sid, msg)
 
         _record_agent_event(
             event_type="chat_done" if not err else "chat_error",
@@ -581,7 +646,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
             },
         )
 
-        return ChatResponse(reply=reply, session_id=sid, message_ref=ai_message_ref, error=err)
+        return ChatResponse(
+            reply=reply,
+            session_id=sid,
+            message_ref=ai_message_ref,
+            chat_title=chat_title,
+            error=err,
+        )
 
 
 async def _resolve_session(
@@ -636,12 +707,12 @@ async def _resolve_session(
 
         if llm_mode == "agent":
             local_reply = agent_mode_reply(msg, hist)
+        elif llm_mode == "gemini":
+            local_reply = None
         else:
             local_reply = _simple_local_reply(msg)
             if local_reply is None:
                 local_reply = _vague_short_clarify_reply(msg)
-            if local_reply is None and not _requires_live_time_lookup(msg):
-                local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
 
         if local_reply is not None:
             return (
@@ -777,11 +848,11 @@ async def _stream_pipeline(
         yield ev  # forward status and delta to client
 
     registry: VersionRegistry = app.state.version_registry
-    chat_reg_p: ChatRegistry = app.state.chat_registry
     version_id_for_history = version_id_for_events or registry.get_active().version_id
 
     yield {"event": "status", "phase": "history_persisting", "label": "儲存對話紀錄"}
 
+    chat_title: str | None = None
     async with lock:
         hist2 = sessions.get(sid, [])
         human_msg = HumanMessage(content=msg)
@@ -796,8 +867,7 @@ async def _stream_pipeline(
             )
         _trim_session(hist2)
         await asyncio.to_thread(_persist_trim, app, sid)
-        await asyncio.to_thread(chat_reg_p.set_title_if_default, sid, msg)
-        await asyncio.to_thread(chat_reg_p.touch, sid)
+    chat_title = await _update_title_after_first_message(app, sid, msg)
 
     if not terminated:
         _record_agent_event(
@@ -812,6 +882,7 @@ async def _stream_pipeline(
         "event": "done",
         "reply": reply,
         "session_id": sid,
+        "chat_title": chat_title,
         "request_id": request_id,
         "message_ref": ai_message_ref if not terminated else None,
         "terminated": terminated,
@@ -858,6 +929,7 @@ async def chat_stream(req: ChatRequest):
                 await asyncio.to_thread(_persist_message, app, sid, human_m, vid_lr)
                 message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_m, vid_lr)
                 await asyncio.to_thread(_persist_trim, app, sid)
+            chat_title = await _update_title_after_first_message(app, sid, msg)
             _record_agent_event(
                 event_type="chat_done",
                 session_id=sid,
@@ -871,6 +943,7 @@ async def chat_stream(req: ChatRequest):
                         "event": "done",
                         "reply": local_reply,
                         "session_id": sid,
+                        "chat_title": chat_title,
                         "request_id": request_id,
                         "message_ref": message_ref,
                         "terminated": False,
@@ -964,6 +1037,7 @@ async def ws_chat_live(websocket: WebSocket):
                     await asyncio.to_thread(_persist_message, app, sid, human_mw, vid_ws)
                     message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_mw, vid_ws)
                     await asyncio.to_thread(_persist_trim, app, sid)
+                chat_title = await _update_title_after_first_message(app, sid, msg)
                 _record_agent_event(
                     event_type="chat_done",
                     session_id=sid,
@@ -977,6 +1051,7 @@ async def ws_chat_live(websocket: WebSocket):
                             "event": "done",
                             "reply": local_reply,
                             "session_id": sid,
+                            "chat_title": chat_title,
                             "request_id": request_id,
                             "message_ref": message_ref,
                             "terminated": False,
@@ -1060,6 +1135,7 @@ async def chat_fallback(req: ChatRequest) -> ChatResponse:
         _trim_session(hist2)
         message_ref = await asyncio.to_thread(_persist_message, app, sid, ai_msg_fb, None)
         await asyncio.to_thread(_persist_trim, app, sid)
+    chat_title = await _update_title_after_first_message(app, sid, msg)
 
     _record_agent_event(
         event_type="chat_done" if not err else "chat_error",
@@ -1068,7 +1144,13 @@ async def chat_fallback(req: ChatRequest) -> ChatResponse:
         request_id=request_id,
         payload={"reply_text": reply, "error": err, "message_ref": message_ref or "", "route": "fallback"},
     )
-    return ChatResponse(reply=reply, session_id=sid, message_ref=message_ref, error=err)
+    return ChatResponse(
+        reply=reply,
+        session_id=sid,
+        message_ref=message_ref,
+        chat_title=chat_title,
+        error=err,
+    )
 
 
 @app.post("/api/clear")

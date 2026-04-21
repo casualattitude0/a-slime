@@ -173,6 +173,11 @@ export const useChatStore = defineStore('chat', () => {
       }
       streamingBotIndex.value = -1
       streamingReply.value = ''
+      const sid = obj.session_id ? String(obj.session_id) : sessionId.value
+      if (sid && obj.chat_title) {
+        _applyChatTitleLocally(sid, String(obj.chat_title))
+        void fetchChats()
+      }
       persistedTurnTick.value += 1
       return { done: true }
     }
@@ -408,6 +413,11 @@ export const useChatStore = defineStore('chat', () => {
       } else if (data.reply) {
         messages.value.push({ role: 'bot', text: data.reply })
       }
+      const sid = data.session_id ? String(data.session_id) : sessionId.value
+      if (sid && data.chat_title) {
+        _applyChatTitleLocally(sid, String(data.chat_title))
+        void fetchChats()
+      }
     } catch (e: any) {
       messages.value.push({ role: 'err', text: String(e) })
     } finally {
@@ -570,6 +580,28 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       localStorage.removeItem('agent_active_chat_id')
     }
+  }
+
+  function _applyChatTitleLocally(chatId: string, title: string) {
+    const normalized = String(title || '').trim()
+    if (!chatId || !normalized) return
+    const idx = chats.value.findIndex((c) => c.chat_id === chatId)
+    if (idx >= 0) {
+      const current = chats.value[idx]!
+      chats.value[idx] = {
+        ...current,
+        title: normalized,
+        updated_at: new Date().toISOString(),
+      }
+      return
+    }
+    chats.value.unshift({
+      chat_id: chatId,
+      version_id: activeVersionId.value ?? '',
+      title: normalized,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
   }
 
   async function fetchChats() {

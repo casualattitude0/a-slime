@@ -148,6 +148,18 @@ class ChatRegistry:
                 entry.updated_at = _now_iso()
                 self._save()
 
+    def set_generated_title_if_default(self, chat_id: str, title: str) -> str | None:
+        """Apply generated title only when current title is still default."""
+        with self._lock:
+            entry = self._chats.get(chat_id)
+            if entry is None or entry.title != "New Chat":
+                return None
+            clean = title.strip() or "New Chat"
+            entry.title = clean
+            entry.updated_at = _now_iso()
+            self._save()
+            return entry.title
+
     def ensure(self, chat_id: str, version_id: str) -> ChatEntry:
         """Return existing entry or create one (used for legacy session adoption)."""
         with self._lock:
