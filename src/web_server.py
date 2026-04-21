@@ -364,6 +364,13 @@ def _get_executor_for_llm_mode(
     return _get_executor(app, version_id, user_message, history_len)
 
 
+def _executor_model_label(app: FastAPI, executor: Any) -> str:
+    ollama_ex = getattr(app.state, "executor_ollama", None)
+    if ollama_ex is not None and executor is ollama_ex:
+        return "Ollama"
+    return "Gemini"
+
+
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -638,7 +645,12 @@ async def _resolve_session(
         executor = _get_executor_for_llm_mode(
             app, version.version_id, msg, len(hist), llm_mode
         )
-        payload = {"input": msg, "chat_history": history_for_prompt, "version_id": version.version_id}
+        payload = {
+            "input": msg,
+            "chat_history": history_for_prompt,
+            "version_id": version.version_id,
+            "llm_model_label": _executor_model_label(app, executor),
+        }
         return sid, history_for_prompt, executor, payload, cancel_event
 
 
@@ -736,7 +748,10 @@ async def _stream_pipeline(
             label = ev.get("label", "")
             if phase == "llm_requesting":
                 phase = "llm_requesting_model"
+                model_label = str(payload.get("llm_model_label") or "LLM")
+                label = f"正在與 {model_label} 溝通"
                 ev["phase"] = phase
+                ev["label"] = label
             _record_agent_event(
                 event_type="status",
                 session_id=sid,
