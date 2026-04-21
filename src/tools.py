@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Callable
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
@@ -16,6 +20,26 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from pydantic import BaseModel, Field
 
 _MEMORY_COLLECTION = "agent_memory"
+_ReminderSink = Callable[[dict[str, Any]], None]
+_reminder_sink_lock = Lock()
+_reminder_sink: _ReminderSink | None = None
+
+
+def set_reminder_sink(sink: _ReminderSink | None) -> None:
+    global _reminder_sink
+    with _reminder_sink_lock:
+        _reminder_sink = sink
+
+
+def _emit_reminder(payload: dict[str, Any]) -> None:
+    with _reminder_sink_lock:
+        sink = _reminder_sink
+    if sink is None:
+        return
+    try:
+        sink(payload)
+    except Exception:
+        return
 
 
 def _memory_store_for(
@@ -363,4 +387,315 @@ def make_shell_tool() -> StructuredTool:
         ),
         func=_run_shell_command,
         args_schema=ShellCommandArgs,
+    )
+
+
+class CalendarCreateEventArgs(BaseModel):
+    title: str = Field(description="Event title")
+    start_at: str = Field(description="Event start datetime in ISO-8601")
+    end_at: str = Field(description="Event end datetime in ISO-8601")
+    timezone: str = Field(default="Asia/Taipei", description="IANA timezone")
+    description: str = Field(default="", description="Event description")
+    reminder_message: str = Field(default="", description="Reminder message for chat")
+    source_session_id: str = Field(default="", description="Origin session id")
+
+
+class CalendarUpdateEventArgs(BaseModel):
+    event_id: str = Field(description="Google Calendar event id")
+    title: str = Field(default="", description="Event title")
+    start_at: str = Field(default="", description="Event start datetime in ISO-8601")
+    end_at: str = Field(default="", description="Event end datetime in ISO-8601")
+    timezone: str = Field(default="Asia/Taipei", description="IANA timezone")
+    description: str = Field(default="", description="Event description")
+
+
+class CalendarDeleteEventArgs(BaseModel):
+    event_id: str = Field(description="Google Calendar event id")
+
+
+def _normalize_iso_datetime(raw: str, timezone_name: str) -> datetime:
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("datetime is required")
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(s)
+    tz = ZoneInfo(timezone_name)
+    if parsed.tzinfo is None:
+        # Interpret naive datetime as local wall-clock time in requested timezone.
+        parsed = parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def _create_google_calendar_event(
+    *,
+    title: str,
+    start_at: datetime,
+    end_at: datetime,
+    timezone_name: str,
+    description: str,
+) -> dict[str, Any]:
+    token = (os.environ.get("GOOGLE_CALENDAR_ACCESS_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("Missing GOOGLE_CALENDAR_ACCESS_TOKEN")
+    calendar_id = (os.environ.get("GOOGLE_CALENDAR_ID") or "primary").strip() or "primary"
+    payload = {
+        "summary": title,
+        "description": description,
+        "start": {"dateTime": start_at.isoformat(), "timeZone": timezone_name},
+        "end": {"dateTime": end_at.isoformat(), "timeZone": timezone_name},
+    }
+    url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events"
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.post(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return {"id": data.get("id", ""), "html_link": data.get("htmlLink", "")}
+
+
+def _google_calendar_headers() -> tuple[str, dict[str, str]]:
+    token = (os.environ.get("GOOGLE_CALENDAR_ACCESS_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("Missing GOOGLE_CALENDAR_ACCESS_TOKEN")
+    calendar_id = (os.environ.get("GOOGLE_CALENDAR_ID") or "primary").strip() or "primary"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return calendar_id, headers
+
+
+def _update_google_calendar_event(
+    *,
+    event_id: str,
+    title: str,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    timezone_name: str,
+    description: str,
+) -> dict[str, Any]:
+    event_id_clean = (event_id or "").strip()
+    if not event_id_clean:
+        raise ValueError("event_id is required")
+    calendar_id, headers = _google_calendar_headers()
+    patch_payload: dict[str, Any] = {}
+    if title.strip():
+        patch_payload["summary"] = title.strip()
+    if description.strip():
+        patch_payload["description"] = description.strip()
+    if start_at is not None:
+        patch_payload["start"] = {"dateTime": start_at.isoformat(), "timeZone": timezone_name}
+    if end_at is not None:
+        patch_payload["end"] = {"dateTime": end_at.isoformat(), "timeZone": timezone_name}
+    if not patch_payload:
+        raise ValueError("no updatable fields provided")
+    url = (
+        "https://www.googleapis.com/calendar/v3/calendars/"
+        f"{quote(calendar_id, safe='')}/events/{quote(event_id_clean, safe='')}"
+    )
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.patch(url, headers=headers, json=patch_payload)
+        resp.raise_for_status()
+        data = resp.json()
+    return {"id": data.get("id", ""), "html_link": data.get("htmlLink", "")}
+
+
+def _delete_google_calendar_event(*, event_id: str) -> None:
+    event_id_clean = (event_id or "").strip()
+    if not event_id_clean:
+        raise ValueError("event_id is required")
+    calendar_id, headers = _google_calendar_headers()
+    url = (
+        "https://www.googleapis.com/calendar/v3/calendars/"
+        f"{quote(calendar_id, safe='')}/events/{quote(event_id_clean, safe='')}"
+    )
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.delete(url, headers=headers)
+        resp.raise_for_status()
+
+
+def _create_apple_calendar_event(
+    *,
+    title: str,
+    start_at: datetime,
+    end_at: datetime,
+    timezone_name: str,
+    description: str,
+) -> dict[str, Any]:
+    endpoint = (os.environ.get("APPLE_CALENDAR_API_URL") or "").strip()
+    token = (os.environ.get("APPLE_CALENDAR_API_TOKEN") or "").strip()
+    if not endpoint or not token:
+        raise RuntimeError("Apple calendar API not configured")
+    payload = {
+        "title": title,
+        "description": description,
+        "start_at": start_at.isoformat(),
+        "end_at": end_at.isoformat(),
+        "timezone": timezone_name,
+    }
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+    return {"id": data.get("id", ""), "url": data.get("url", "")}
+
+
+def make_calendar_tool() -> StructuredTool:
+    def _create_event(
+        title: str,
+        start_at: str,
+        end_at: str,
+        timezone: str = "Asia/Taipei",
+        description: str = "",
+        reminder_message: str = "",
+        source_session_id: str = "",
+    ) -> str:
+        t = (title or "").strip()
+        if not t:
+            return '{"ok": false, "error": "title is required"}'
+        tz_name = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
+        try:
+            start_dt = _normalize_iso_datetime(start_at, tz_name)
+            end_dt = _normalize_iso_datetime(end_at, tz_name)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"invalid datetime: {str(exc)}"}, ensure_ascii=False)
+        if end_dt <= start_dt:
+            return json.dumps({"ok": False, "error": "end_at must be after start_at"}, ensure_ascii=False)
+        desc = (description or "").strip()
+        warning_messages: list[str] = []
+        google_result: dict[str, Any] = {}
+        apple_result: dict[str, Any] = {}
+
+        try:
+            google_result = _create_google_calendar_event(
+                title=t,
+                start_at=start_dt,
+                end_at=end_dt,
+                timezone_name=tz_name,
+                description=desc,
+            )
+            google_success = True
+        except Exception as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "google_success": False,
+                    "apple_success": False,
+                    "error": f"google calendar create failed: {str(exc)}",
+                },
+                ensure_ascii=False,
+            )
+
+        try:
+            apple_result = _create_apple_calendar_event(
+                title=t,
+                start_at=start_dt,
+                end_at=end_dt,
+                timezone_name=tz_name,
+                description=desc,
+            )
+            apple_success = True
+        except Exception as exc:
+            apple_success = False
+            warning_messages.append(f"apple calendar create skipped/failed: {str(exc)}")
+
+        _emit_reminder(
+            {
+                "title": t,
+                "reminder_at": start_dt.isoformat(),
+                "message": (reminder_message or "").strip() or f"提醒：{t}",
+                "source_session_id": (source_session_id or "").strip(),
+            }
+        )
+        result = {
+            "ok": True,
+            "google_success": google_success,
+            "apple_success": apple_success,
+            "event_ids": {
+                "google": google_result.get("id", ""),
+                "apple": apple_result.get("id", ""),
+            },
+            "event_links": {
+                "google": google_result.get("html_link", ""),
+                "apple": apple_result.get("url", ""),
+            },
+            "warnings": warning_messages,
+        }
+        return json.dumps(result, ensure_ascii=False)
+
+    return StructuredTool.from_function(
+        name="calendar_create_event",
+        description=(
+            "Create a calendar event in Google Calendar and attempt Apple Calendar sync. "
+            "Google failure is fatal; Apple failure becomes warning. Also schedules an in-app reminder."
+        ),
+        func=_create_event,
+        args_schema=CalendarCreateEventArgs,
+    )
+
+
+def make_calendar_update_tool() -> StructuredTool:
+    def _update_event(
+        event_id: str,
+        title: str = "",
+        start_at: str = "",
+        end_at: str = "",
+        timezone: str = "Asia/Taipei",
+        description: str = "",
+    ) -> str:
+        tz_name = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
+        start_dt: datetime | None = None
+        end_dt: datetime | None = None
+        if (start_at or "").strip():
+            start_dt = _normalize_iso_datetime(start_at, tz_name)
+        if (end_at or "").strip():
+            end_dt = _normalize_iso_datetime(end_at, tz_name)
+        if start_dt and end_dt and end_dt <= start_dt:
+            return json.dumps({"ok": False, "error": "end_at must be after start_at"}, ensure_ascii=False)
+        try:
+            result = _update_google_calendar_event(
+                event_id=event_id,
+                title=title,
+                start_at=start_dt,
+                end_at=end_dt,
+                timezone_name=tz_name,
+                description=description,
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"google calendar update failed: {str(exc)}"}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "event_id": result.get("id", ""),
+                "event_link": result.get("html_link", ""),
+            },
+            ensure_ascii=False,
+        )
+
+    return StructuredTool.from_function(
+        name="calendar_update_event",
+        description="Update an existing Google Calendar event by event_id.",
+        func=_update_event,
+        args_schema=CalendarUpdateEventArgs,
+    )
+
+
+def make_calendar_delete_tool() -> StructuredTool:
+    def _delete_event(event_id: str) -> str:
+        try:
+            _delete_google_calendar_event(event_id=event_id)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"google calendar delete failed: {str(exc)}"}, ensure_ascii=False)
+        return json.dumps({"ok": True, "event_id": (event_id or "").strip()}, ensure_ascii=False)
+
+    return StructuredTool.from_function(
+        name="calendar_delete_event",
+        description="Delete an existing Google Calendar event by event_id.",
+        func=_delete_event,
+        args_schema=CalendarDeleteEventArgs,
     )

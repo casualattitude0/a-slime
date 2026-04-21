@@ -69,6 +69,8 @@ export const useChatStore = defineStore('chat', () => {
   const ragItems = ref<RagItem[]>([])
   const ragLoading = ref<boolean>(false)
   const activeController = ref<AbortController | null>(null)
+  const pendingReminderChatId = ref<string | null>(null)
+  let _reminderPollTimer: number | null = null
 
   const chats = ref<ChatEntry[]>([])
   const activeChatId = ref<string | null>(localStorage.getItem('agent_active_chat_id'))
@@ -318,7 +320,37 @@ export const useChatStore = defineStore('chat', () => {
       streamingReply.value = ''
       status.value = ''
       isLoading.value = false
+      if (pendingReminderChatId.value) {
+        const chatId = pendingReminderChatId.value
+        pendingReminderChatId.value = null
+        void switchToChat(chatId)
+      }
     }
+  }
+
+  async function pollPendingReminders() {
+    try {
+      const res = await fetch('/api/reminders/pending')
+      if (!res.ok) return
+      const data = await res.json()
+      const items = Array.isArray(data.items) ? data.items : []
+      if (items.length === 0) return
+      const latest = items[items.length - 1]
+      const chatId = String(latest?.chat_id || '').trim()
+      if (!chatId) return
+      await fetchChats()
+      if (isLoading.value) {
+        pendingReminderChatId.value = chatId
+        return
+      }
+      await switchToChat(chatId)
+    } catch {}
+  }
+
+  function startReminderPolling() {
+    if (_reminderPollTimer != null) return
+    void pollPendingReminders()
+    _reminderPollTimer = window.setInterval(() => { void pollPendingReminders() }, 3000)
   }
 
   async function terminateMessage() {
@@ -792,5 +824,6 @@ export const useChatStore = defineStore('chat', () => {
     switchToChat,
     renameChat,
     deleteChat,
+    startReminderPolling,
   }
 })

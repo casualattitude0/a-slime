@@ -18,6 +18,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from pydantic import BaseModel, Field, field_validator
 
 from src.tools import (
+    make_calendar_delete_tool,
+    make_calendar_tool,
+    make_calendar_update_tool,
     make_memory_tools,
     make_reasoning_tool,
     make_shell_tool,
@@ -891,6 +894,9 @@ def build_executor(
     mem_col = memory_collection or "agent_memory"
     memory_tools = make_memory_tools(chroma_path, embeddings, collection_name=mem_col)
     reasoning_tool = make_reasoning_tool()
+    calendar_create_tool = make_calendar_tool()
+    calendar_update_tool = make_calendar_update_tool()
+    calendar_delete_tool = make_calendar_delete_tool()
 
     chat_model = llm or _make_llm()
     character_section = _build_character_prompt_section()
@@ -910,6 +916,9 @@ def build_executor(
         "- execute_shell_command：執行本機 Shell 指令（如 date、grep、tail、ls）以獲取系統時間、讀取日誌或抓取特定資料。\n"
         "- ask_reasoning_model：將複雜、多步驟的分析或綜整委派給更強的推理模型，並明確附上問題與已蒐集脈絡。\n"
         "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
+        "- calendar_create_event：新增 Google 行事曆事件，並同步嘗試 Apple 行事曆。\n"
+        "- calendar_update_event：修改既有 Google 行事曆事件（標題、時間、描述）。\n"
+        "- calendar_delete_event：刪除既有 Google 行事曆事件。\n\n"
         "即時性規則：\n"
         "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
         "情境辨識與自然對話：\n"
@@ -946,6 +955,9 @@ def build_executor(
         shell_tool,
         reasoning_tool,
         retriever_tool,
+        calendar_create_tool,
+        calendar_update_tool,
+        calendar_delete_tool,
     ]
     save_memory_tool = next((t for t in memory_tools if getattr(t, "name", "") == "save_to_memory"), None)
     if _is_ollama_llm(chat_model):
@@ -1119,6 +1131,9 @@ def _tool_name_to_status(name: str) -> tuple[str, str]:
         "save_to_memory": ("tool_running", "儲存至長期記憶"),
         "execute_shell_command": ("tool_running", "執行 Shell 指令"),
         "ask_reasoning_model": ("tool_running", "委派推理模型"),
+        "calendar_create_event": ("tool_running", "新增行事曆事件"),
+        "calendar_update_event": ("tool_running", "修改行事曆事件"),
+        "calendar_delete_event": ("tool_running", "刪除行事曆事件"),
     }
     if name in _map:
         return _map[name]

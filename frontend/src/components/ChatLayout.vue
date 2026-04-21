@@ -114,6 +114,7 @@ watch(
 onMounted(async () => {
   scrollHistoryRailToBottom()
   await Promise.all([chatStore.fetchVersions(), chatStore.fetchChats()])
+  chatStore.startReminderPolling()
   // Restore last active chat on first load
   const { activeChatId } = storeToRefs(chatStore)
   if (activeChatId.value) {

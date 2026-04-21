@@ -9,6 +9,7 @@ import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -54,6 +55,7 @@ from src.tools import (
     delete_all_memory_items,
     delete_memory_item,
     list_memory_items,
+    set_reminder_sink,
 )
 from src.version_registry import VersionRegistry
 
@@ -63,6 +65,103 @@ _REGISTRY_PATH = _ROOT / "version_registry.json"
 _CHAT_REGISTRY_PATH = _ROOT / "chat_registry.json"
 
 _MAX_SESSION_MESSAGES = 40
+class ReminderNotification(BaseModel):
+    notification_id: str
+    chat_id: str
+    source_session_id: str | None = None
+    message: str
+    created_at: str
+
+
+def _parse_iso_dt(raw: str) -> datetime:
+    s = (raw or "").strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+async def _deliver_reminder_event(app: FastAPI, payload: dict[str, Any]) -> None:
+    lock: asyncio.Lock = app.state.lock
+    sessions: dict[str, list[BaseMessage]] = app.state.sessions
+    registry: VersionRegistry = app.state.version_registry
+    chat_reg: ChatRegistry = app.state.chat_registry
+    active_version = registry.get_active()
+    title = (str(payload.get("title") or "").strip() or "提醒")
+    reminder_text = (str(payload.get("message") or "").strip() or f"提醒：{title}")
+    source_session_id = str(payload.get("source_session_id") or "").strip() or None
+
+    entry = await asyncio.to_thread(
+        chat_reg.create,
+        active_version.version_id,
+        f"提醒：{title}"[:60],
+        None,
+        {
+            "chat_type": "reminder",
+            "source_session_id": source_session_id or "",
+            "reminder_at": str(payload.get("reminder_at") or ""),
+        },
+    )
+    async with lock:
+        sessions[entry.chat_id] = []
+        user_msg = HumanMessage(content="系統提醒觸發")
+        bot_msg = AIMessage(content=reminder_text)
+        sessions[entry.chat_id].append(user_msg)
+        sessions[entry.chat_id].append(bot_msg)
+        await asyncio.to_thread(
+            _persist_message, app, entry.chat_id, user_msg, active_version.version_id
+        )
+        await asyncio.to_thread(
+            _persist_message, app, entry.chat_id, bot_msg, active_version.version_id
+        )
+        await asyncio.to_thread(_persist_trim, app, entry.chat_id)
+        app.state.reminder_notifications.append(
+            ReminderNotification(
+                notification_id=str(uuid.uuid4()),
+                chat_id=entry.chat_id,
+                source_session_id=source_session_id,
+                message=reminder_text,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            ).model_dump()
+        )
+
+
+def _enqueue_reminder(app: FastAPI, payload: dict[str, Any]) -> None:
+    reminder_at_raw = str(payload.get("reminder_at") or "").strip()
+    if not reminder_at_raw:
+        return
+    try:
+        reminder_at = _parse_iso_dt(reminder_at_raw)
+    except Exception:
+        return
+    loop = getattr(app.state, "main_loop", None)
+    if loop is None:
+        return
+    loop.call_soon_threadsafe(
+        app.state.reminder_queue.put_nowait,
+        {
+            "reminder_at": reminder_at,
+            "payload": payload,
+        },
+    )
+
+
+async def _reminder_worker(app: FastAPI) -> None:
+    while True:
+        item = await app.state.reminder_queue.get()
+        reminder_at: datetime = item["reminder_at"]
+        payload: dict[str, Any] = item["payload"]
+        now = datetime.now(timezone.utc)
+        delay = (reminder_at - now).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        try:
+            await _deliver_reminder_event(app, payload)
+        except Exception:
+            pass
+
 
 
 def _trim_session(msgs: list[BaseMessage]) -> None:
@@ -452,6 +551,7 @@ def _executor_model_label(app: FastAPI, executor: Any) -> str:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     load_dotenv(_ROOT / ".env")
+    app.state.main_loop = asyncio.get_running_loop()
     if not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")):
         raise RuntimeError(
             "Set GOOGLE_API_KEY or GEMINI_API_KEY in .env (required for RAG embeddings)."
@@ -490,6 +590,10 @@ async def _lifespan(app: FastAPI):
     app.state.sessions: dict[str, list[BaseMessage]] = {}
     app.state.cancel_events: dict[str, threading.Event] = {}
     app.state.lock = asyncio.Lock()
+    app.state.reminder_queue = asyncio.Queue()
+    app.state.reminder_notifications: list[dict[str, Any]] = []
+    app.state.reminder_worker_task = asyncio.create_task(_reminder_worker(app))
+    set_reminder_sink(lambda payload: _enqueue_reminder(app, payload))
 
     # Restore persisted sessions from Chroma and adopt into chat registry.
     registry_for_restore: VersionRegistry = app.state.version_registry
@@ -506,6 +610,10 @@ async def _lifespan(app: FastAPI):
             chat_reg.ensure(vsid, vid)
 
     yield
+    set_reminder_sink(None)
+    task = getattr(app.state, "reminder_worker_task", None)
+    if task:
+        task.cancel()
 
 
 app = FastAPI(lifespan=_lifespan)
@@ -1250,6 +1358,15 @@ class ChatRenamRequest(BaseModel):
 async def list_chats() -> dict[str, Any]:
     chat_reg: ChatRegistry = app.state.chat_registry
     return {"chats": chat_reg.list_all()}
+
+
+@app.get("/api/reminders/pending")
+async def get_pending_reminders() -> dict[str, Any]:
+    lock: asyncio.Lock = app.state.lock
+    async with lock:
+        items = list(app.state.reminder_notifications)
+        app.state.reminder_notifications.clear()
+    return {"items": items}
 
 
 @app.post("/api/chats")

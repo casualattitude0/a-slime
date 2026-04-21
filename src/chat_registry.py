@@ -20,7 +20,7 @@ def _now_iso() -> str:
 
 
 class ChatEntry:
-    __slots__ = ("chat_id", "version_id", "title", "created_at", "updated_at")
+    __slots__ = ("chat_id", "version_id", "title", "created_at", "updated_at", "metadata")
 
     def __init__(
         self,
@@ -29,12 +29,14 @@ class ChatEntry:
         title: str,
         created_at: str,
         updated_at: str,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.chat_id = chat_id
         self.version_id = version_id
         self.title = title
         self.created_at = created_at
         self.updated_at = updated_at
+        self.metadata = dict(metadata or {})
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +45,7 @@ class ChatEntry:
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -53,6 +56,7 @@ class ChatEntry:
             title=d.get("title", "New Chat"),
             created_at=d["created_at"],
             updated_at=d.get("updated_at", d["created_at"]),
+            metadata=d.get("metadata") if isinstance(d.get("metadata"), dict) else {},
         )
 
 
@@ -86,6 +90,7 @@ class ChatRegistry:
         version_id: str,
         title: str = "New Chat",
         chat_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ChatEntry:
         with self._lock:
             cid = chat_id or str(uuid.uuid4())
@@ -96,6 +101,7 @@ class ChatRegistry:
                 title=title,
                 created_at=now,
                 updated_at=now,
+                metadata=metadata,
             )
             self._chats[cid] = entry
             self._save()
