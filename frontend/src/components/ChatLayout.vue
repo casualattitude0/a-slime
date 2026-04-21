@@ -57,11 +57,17 @@ const historyRailRef = ref<HTMLElement | null>(null)
 const heroAvatarRef = ref<HTMLImageElement | null>(null)
 const showPanel = ref(false)
 const sidebarOpen = ref(localStorage.getItem('agent_sidebar_open') !== '0')
+const historyRailOpen = ref(localStorage.getItem('agent_history_rail_open') !== '0')
 const heroThinkingText = computed(() => streamingReply.value || status.value || 'AI 思考中')
 
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
   localStorage.setItem('agent_sidebar_open', sidebarOpen.value ? '1' : '0')
+}
+
+function toggleHistoryRail() {
+  historyRailOpen.value = !historyRailOpen.value
+  localStorage.setItem('agent_history_rail_open', historyRailOpen.value ? '1' : '0')
 }
 
 const scrollHistoryRailToBottom = async () => {
@@ -203,7 +209,18 @@ useHeroToChatBubbleFly({
           <div class="center-stage-inner">
             <div class="center-stage-hero-cluster">
             <div class="center-stage-block center-stage-block--agent">
-            <div v-if="showEmptyAgentBubble" class="agent-bubble-placeholder" aria-hidden="true" />
+            <div
+              v-if="showEmptyAgentBubble"
+              class="agent-bubble-placeholder"
+              :class="{ 'agent-bubble-placeholder--thinking': isLoading && streamingBotIndex === -1 }"
+              role="status"
+              aria-live="polite"
+            >
+              <span
+                v-if="isLoading && streamingBotIndex === -1"
+                class="agent-placeholder-thinking"
+              >{{ heroThinkingText }}</span>
+            </div>
 
             <ChatMessage
               v-for="entry in activeAgentEntries"
@@ -226,7 +243,6 @@ useHeroToChatBubbleFly({
             </div>
 
             <div class="hero-banner hero-banner--stage">
-              <div v-if="isLoading && streamingBotIndex === -1" class="hero-thinking-bubble">{{ heroThinkingText }}</div>
               <div class="hero-activity">
                 <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
               </div>
@@ -256,9 +272,24 @@ useHeroToChatBubbleFly({
           </div>
         </div>
 
-        <aside class="history-rail" aria-label="Earlier messages">
-          <div class="history-rail-header">History</div>
-          <div ref="historyRailRef" class="history-rail-scroll">
+        <aside
+          class="history-rail"
+          :class="{ 'history-rail--collapsed': !historyRailOpen }"
+          aria-label="Earlier messages"
+        >
+          <div class="history-rail-header">
+            <span class="history-rail-title" :class="{ 'history-rail-title--hidden': !historyRailOpen }">History</span>
+            <button
+              class="history-rail-toggle"
+              :title="historyRailOpen ? 'Collapse history' : 'Expand history'"
+              :aria-label="historyRailOpen ? 'Collapse history' : 'Expand history'"
+              :aria-expanded="historyRailOpen"
+              @click="toggleHistoryRail"
+            >
+              <span class="history-rail-toggle-icon" :class="{ 'history-rail-toggle-icon--collapsed': !historyRailOpen }">></span>
+            </button>
+          </div>
+          <div v-show="historyRailOpen" ref="historyRailRef" class="history-rail-scroll">
             <div class="history-rail-inner">
               <ChatMessage
                 v-for="(msg, i) in historyMessages"
@@ -521,6 +552,27 @@ useHeroToChatBubbleFly({
   border-radius: 12px;
   border: 1px dashed rgba(160, 100, 255, 0.38);
   background: rgba(140, 80, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  box-sizing: border-box;
+}
+
+.agent-bubble-placeholder--thinking {
+  border-style: solid;
+  border-color: rgba(160, 100, 255, 0.3);
+  background: rgba(140, 80, 255, 0.08);
+  animation: hero-think-pulse 1s ease-in-out infinite;
+}
+
+.agent-placeholder-thinking {
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  line-height: 1.35;
+  color: rgba(206, 180, 255, 0.95);
+  text-align: center;
+  word-break: break-word;
 }
 
 .center-stage-msg {
@@ -596,10 +648,25 @@ useHeroToChatBubbleFly({
   min-height: 0;
   border-left: 1px solid var(--border);
   background: rgba(10, 11, 15, 0.62);
+  transition: width 0.18s ease;
+}
+
+.history-rail--collapsed {
+  width: 44px;
+}
+
+.history-rail--collapsed .history-rail-header {
+  justify-content: center;
+  padding-left: 6px;
+  padding-right: 6px;
 }
 
 .history-rail-header {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px 8px;
   font-size: 10px;
   font-weight: 700;
@@ -608,6 +675,59 @@ useHeroToChatBubbleFly({
   color: var(--text-dim);
   font-family: ui-monospace, monospace;
   border-bottom: 1px solid var(--border);
+}
+
+.history-rail-title {
+  white-space: nowrap;
+  transition: opacity 0.15s ease;
+}
+
+.history-rail-title--hidden {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+.history-rail-toggle {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 229, 255, 0.28);
+  background: rgba(0, 229, 255, 0.08);
+  color: rgba(180, 244, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.1) inset;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+}
+
+.history-rail-toggle:hover {
+  color: #d8f9ff;
+  border-color: rgba(0, 229, 255, 0.5);
+  background: rgba(0, 229, 255, 0.18);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.22);
+}
+
+.history-rail-toggle:focus-visible {
+  outline: 2px solid rgba(0, 229, 255, 0.62);
+  outline-offset: 2px;
+}
+
+.history-rail-toggle-icon {
+  display: inline-block;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  transform: rotate(180deg);
+  transition: transform 0.18s ease;
+}
+
+.history-rail-toggle-icon--collapsed {
+  transform: rotate(0deg);
 }
 
 .history-rail-scroll {
@@ -650,6 +770,12 @@ useHeroToChatBubbleFly({
     max-height: min(240px, 34vh);
     border-left: none;
     border-top: 1px solid var(--border);
+    transition: max-height 0.18s ease;
+  }
+
+  .history-rail--collapsed {
+    width: 100%;
+    max-height: 36px;
   }
 }
 
@@ -706,19 +832,6 @@ useHeroToChatBubbleFly({
   box-shadow: none;
   background: none;
   margin-bottom: 4px;
-}
-
-.hero-thinking-bubble {
-  margin-bottom: 8px;
-  padding: 6px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(160, 100, 255, 0.3);
-  background: rgba(140, 80, 255, 0.08);
-  color: rgba(206, 180, 255, 0.95);
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
-  line-height: 1.2;
-  animation: hero-think-pulse 1s ease-in-out infinite;
 }
 
 @keyframes hero-think-pulse {
