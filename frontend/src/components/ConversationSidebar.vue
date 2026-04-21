@@ -52,21 +52,37 @@ interface ChatGroup {
   items: ChatEntry[]
 }
 
+function parseDateMs(value?: string): number | null {
+  if (!value) return null
+  const primary = Date.parse(value)
+  if (Number.isFinite(primary)) return primary
+  const normalized = value.replace(' ', 'T')
+  const fallback = Date.parse(normalized)
+  return Number.isFinite(fallback) ? fallback : null
+}
+
+function getLastEditedMs(chat: ChatEntry): number {
+  return parseDateMs(chat.updated_at) ?? parseDateMs(chat.created_at) ?? 0
+}
+
 const groupedChats = computed<ChatGroup[]>(() => {
-  const now = Date.now()
-  const ms = (s: string) => new Date(s).getTime()
+  const sortedChats = [...chats.value].sort((a, b) => getLastEditedMs(b) - getLastEditedMs(a))
   const day = 86_400_000
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const startOfYesterday = startOfToday - day
+  const startOfSevenDays = startOfToday - 6 * day
 
   const today: ChatEntry[] = []
   const yesterday: ChatEntry[] = []
   const week: ChatEntry[] = []
   const older: ChatEntry[] = []
 
-  for (const c of chats.value) {
-    const age = now - ms(c.updated_at)
-    if (age < day) today.push(c)
-    else if (age < 2 * day) yesterday.push(c)
-    else if (age < 7 * day) week.push(c)
+  for (const c of sortedChats) {
+    const editedAt = getLastEditedMs(c)
+    if (editedAt >= startOfToday) today.push(c)
+    else if (editedAt >= startOfYesterday) yesterday.push(c)
+    else if (editedAt >= startOfSevenDays) week.push(c)
     else older.push(c)
   }
 

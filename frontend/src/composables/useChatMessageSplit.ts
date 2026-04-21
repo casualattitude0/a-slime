@@ -1,7 +1,7 @@
 import { computed, ref, watch, type Ref } from 'vue'
 import type { Message } from '../stores/chatStore'
 
-type TurnSelectionMode = 'latest' | 'selected' | 'draft'
+type TurnSelectionMode = 'latest' | 'selected'
 
 export interface ChatTurn {
   start: number
@@ -45,7 +45,6 @@ export function useChatMessageSplit(messages: Ref<Message[]>) {
   const activeTurn = computed<ChatTurn | null>(() => {
     const t = turns.value
     if (t.length === 0) return null
-    if (selectionMode.value === 'draft') return null
     if (selectionMode.value === 'latest') return t[t.length - 1]!
     return t.find((turn) => turn.start === selectedTurnStart.value) ?? t[t.length - 1]!
   })
@@ -88,11 +87,6 @@ export function useChatMessageSplit(messages: Ref<Message[]>) {
     selectedTurnStart.value = newestTurnStart.value
   }
 
-  function focusDraftTurn() {
-    selectionMode.value = 'draft'
-    selectedTurnStart.value = null
-  }
-
   watch(
     turns,
     (nextTurns) => {
@@ -123,6 +117,5 @@ export function useChatMessageSplit(messages: Ref<Message[]>) {
     globalIndexInActive,
     setActiveTurnByHistorySelection,
     focusNewestTurn,
-    focusDraftTurn,
   }
 }

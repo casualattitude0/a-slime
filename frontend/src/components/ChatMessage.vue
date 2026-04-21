@@ -213,6 +213,33 @@ const roleLabel = computed(() => {
   white-space: pre-wrap;
   word-break: break-words;
   line-height: 1.55;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
+.bubble-bot::-webkit-scrollbar,
+.bubble-user::-webkit-scrollbar,
+.bubble-err::-webkit-scrollbar {
+  width: 6px;
+}
+
+.bubble-bot::-webkit-scrollbar-track,
+.bubble-user::-webkit-scrollbar-track,
+.bubble-err::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.bubble-bot::-webkit-scrollbar-thumb,
+.bubble-user::-webkit-scrollbar-thumb,
+.bubble-err::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 255, 0.2);
+  border-radius: 3px;
+}
+
+.bubble-bot::-webkit-scrollbar-thumb:hover,
+.bubble-user::-webkit-scrollbar-thumb:hover,
+.bubble-err::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 229, 255, 0.4);
 }
 
 /* ── Error bubble ────────────────────────────────────── */
@@ -226,6 +253,8 @@ const roleLabel = computed(() => {
   white-space: pre-wrap;
   word-break: break-words;
   line-height: 1.55;
+  max-height: 45vh;
+  overflow-y: auto;
 }
 
 /* ── Error action buttons ────────────────────────────── */
@@ -268,6 +297,8 @@ const roleLabel = computed(() => {
   color: var(--text);
   line-height: 1.65;
   word-break: break-words;
+  max-height: 45vh;
+  overflow-y: auto;
 }
 
 .feedback-actions {
