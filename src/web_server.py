@@ -29,6 +29,7 @@ from src.agent import (
     delete_rag_item,
     invoke_executor,
     list_rag_items,
+    agent_mode_reply,
     local_quick_reply,
     make_gemini_llm,
     make_ollama_llm,
@@ -239,7 +240,7 @@ def _requires_live_time_lookup(message: str) -> bool:
 class ChatRequest(BaseModel):
     message: str = Field(default="")
     session_id: str | None = None
-    llm_mode: Literal["auto", "gemini"] = "auto"
+    llm_mode: Literal["auto", "gemini", "agent"] = "auto"
 
 
 class ChatResponse(BaseModel):
@@ -349,7 +350,7 @@ def _get_executor_for_llm_mode(
     version_id: str,
     user_message: str,
     history_len: int,
-    llm_mode: Literal["auto", "gemini"],
+    llm_mode: Literal["auto", "gemini", "agent"],
 ) -> Any:
     if llm_mode == "gemini":
         return getattr(app.state, "executor_gemini", None) or _get_executor(
@@ -482,9 +483,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
             request_id=request_id,
             payload={"input_text": msg, "llm_mode": req.llm_mode},
         )
-        local_reply = _simple_local_reply(msg)
-        if local_reply is None and not _requires_live_time_lookup(msg):
-            local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
+        if req.llm_mode == "agent":
+            local_reply = agent_mode_reply(msg, hist)
+        else:
+            local_reply = _simple_local_reply(msg)
+            if local_reply is None and not _requires_live_time_lookup(msg):
+                local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
         used_local_reply = local_reply is not None
         if used_local_reply:
             reply = local_reply
@@ -565,7 +569,7 @@ async def _resolve_session(
     app: FastAPI,
     req_session_id: str | None,
     msg: str,
-    llm_mode: Literal["auto", "gemini"] = "auto",
+    llm_mode: Literal["auto", "gemini", "agent"] = "auto",
 ) -> tuple[str, list[BaseMessage], Any, dict[str, Any] | None, threading.Event]:
     """Resolve (or create) a session and return the objects needed for streaming.
 
@@ -611,9 +615,12 @@ async def _resolve_session(
         else:
             cancel_event.clear()
 
-        local_reply = _simple_local_reply(msg)
-        if local_reply is None and not _requires_live_time_lookup(msg):
-            local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
+        if llm_mode == "agent":
+            local_reply = agent_mode_reply(msg, hist)
+        else:
+            local_reply = _simple_local_reply(msg)
+            if local_reply is None and not _requires_live_time_lookup(msg):
+                local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
 
         if local_reply is not None:
             return (
@@ -725,12 +732,17 @@ async def _stream_pipeline(
             )
 
         if ev_name == "status":
+            phase = ev.get("phase", "")
+            label = ev.get("label", "")
+            if phase == "llm_requesting":
+                phase = "llm_requesting_model"
+                ev["phase"] = phase
             _record_agent_event(
                 event_type="status",
                 session_id=sid,
                 version_id=version_id_for_events,
                 request_id=request_id,
-                payload={"phase": ev.get("phase", ""), "label": ev.get("label", "")},
+                payload={"phase": phase, "label": label},
             )
 
         yield ev  # forward status and delta to client
@@ -883,7 +895,9 @@ async def ws_chat_live(websocket: WebSocket):
                 continue
 
             req_session_id: str | None = data.get("session_id") or None
-            llm_mode = "gemini" if data.get("llm_mode") == "gemini" else "auto"
+            llm_mode = data.get("llm_mode")
+            if llm_mode not in ("auto", "gemini", "agent"):
+                llm_mode = "auto"
 
             try:
                 sid, _hist, executor, payload, cancel_event = await _resolve_session(

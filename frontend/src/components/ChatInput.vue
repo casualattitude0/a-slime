@@ -8,12 +8,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' }): void
+  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' | 'agent' }): void
   (e: 'terminate'): void
 }>()
 
 const input = ref('')
-const llmMode = ref<'auto' | 'gemini'>('auto')
+const llmMode = ref<'auto' | 'gemini' | 'agent'>('auto')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const isComposingWithIME = ref(false)
 
@@ -61,6 +61,7 @@ onMounted(() => {
     <select v-model="llmMode" class="llm-select" :disabled="disabled || loading" aria-label="LLM mode">
       <option value="auto">Auto</option>
       <option value="gemini">Gemini</option>
+      <option value="agent">Agent</option>
     </select>
     <textarea
       ref="textareaRef"

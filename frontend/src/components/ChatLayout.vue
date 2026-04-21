@@ -121,7 +121,7 @@ onMounted(async () => {
   }
 })
 
-const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' }) => {
+const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' | 'agent' }) => {
   chatStore.sendMessage(payload.text, payload.llmMode)
   focusNewestTurn()
 }

@@ -65,7 +65,7 @@ onUnmounted(() => {
   stopStream()
 })
 
-function handleSend(payload: { text: string; llmMode: 'auto' | 'gemini' }) {
+function handleSend(payload: { text: string; llmMode: 'auto' | 'gemini' | 'agent' }) {
   const { text } = payload
   if (!text.trim() || isLoading.value) return
 

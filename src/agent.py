@@ -60,6 +60,27 @@ def _emit_status(phase: str, label: str, **extra: Any) -> None:
         sink(ev)
 
 
+def _llm_vendor_label(serialized: dict[str, Any] | None) -> str:
+    s = serialized or {}
+    text_parts = [
+        str(s.get("name") or ""),
+        str(s.get("id") or ""),
+        str((s.get("kwargs") or {}).get("model") or ""),
+        str((s.get("kwargs") or {}).get("model_name") or ""),
+        str((s.get("config") or {}).get("model") or ""),
+    ]
+    joined = " ".join(text_parts).lower()
+    if "gemini" in joined or "google" in joined:
+        return "Gemini"
+    if "ollama" in joined:
+        return "Ollama"
+    if "openai" in joined or "gpt" in joined:
+        return "OpenAI"
+    if "anthropic" in joined or "claude" in joined:
+        return "Claude"
+    return "LLM"
+
+
 class AgentStatusCallbackHandler(BaseCallbackHandler):
     """Maps LangChain events to zh-TW status labels for the UI."""
 
@@ -90,7 +111,8 @@ class AgentStatusCallbackHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
-        _emit_status("llm_requesting", "正在與 LLM 溝通")
+        vendor = _llm_vendor_label(serialized)
+        _emit_status("llm_requesting", f"正在與 {vendor} 溝通")
 
     def on_tool_start(
         self,
@@ -214,6 +236,120 @@ def should_escalate_to_gemini(user_message: str, history_message_count: int) -> 
     except Exception:
         return False
 
+
+def _safe_eval_math(expr: str) -> str | None:
+    s = (expr or "").strip()
+    if not s or len(s) > 80:
+        return None
+    if not re.fullmatch(r"[0-9\.\s\+\-\*\/\%\(\)]+", s):
+        return None
+    try:
+        node = ast.parse(s, mode="eval")
+    except Exception:
+        return None
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.Pow,
+        ast.FloorDiv,
+    )
+    if any(not isinstance(n, allowed_nodes) for n in ast.walk(node)):
+        return None
+
+    def _eval(n: ast.AST) -> float:
+        if isinstance(n, ast.Expression):
+            return _eval(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return float(n.value)
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
+            v = _eval(n.operand)
+            return v if isinstance(n.op, ast.UAdd) else -v
+        if isinstance(n, ast.BinOp):
+            l = _eval(n.left)
+            r = _eval(n.right)
+            if isinstance(n.op, ast.Add):
+                return l + r
+            if isinstance(n.op, ast.Sub):
+                return l - r
+            if isinstance(n.op, ast.Mult):
+                return l * r
+            if isinstance(n.op, ast.Div):
+                return l / r
+            if isinstance(n.op, ast.Mod):
+                return l % r
+            if isinstance(n.op, ast.FloorDiv):
+                return l // r
+            if isinstance(n.op, ast.Pow):
+                return l**r
+        raise ValueError("Unsupported expression")
+
+    try:
+        out = _eval(node)
+    except Exception:
+        return None
+    if float(out).is_integer():
+        return str(int(out))
+    return str(out)
+
+
+def _last_user_message(history: list, current_message: str) -> str | None:
+    cur = (current_message or "").strip()
+    for m in reversed(history or []):
+        content = getattr(m, "content", None)
+        if not isinstance(content, str):
+            continue
+        text = content.strip()
+        if not text:
+            continue
+        if text != cur:
+            return text
+    return None
+
+
+def agent_mode_reply(user_message: str, history: list | None = None) -> str:
+    """Handle requests in 'agent' mode without using an LLM."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return "請輸入內容。"
+
+    low = msg.lower()
+    if low in {"hi", "hello", "hey", "嗨", "你好", "哈囉"}:
+        return "你好，我是 Agent 模式（不使用 LLM）。"
+    if low in {"thanks", "thank you", "謝謝", "感謝"}:
+        return "不客氣。"
+    if low in {"bye", "掰掰", "再見"}:
+        return "再見。"
+
+    math_result = _safe_eval_math(msg)
+    if math_result is not None:
+        return math_result
+
+    if any(k in low for k in ("今天", "現在", "日期", "時間", "幾點", "today", "current time", "current date")):
+        from datetime import datetime
+
+        now = datetime.now()
+        return f"目前時間：{now.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    if any(k in low for k in ("你認為", "你覺得", "怎麼看", "what do you think")):
+        prev = _last_user_message(history or [], msg)
+        if prev:
+            return f"如果你是指上一句「{prev}」，我可以幫你列出優缺點；請告訴我你要比較的選項。"
+        return "請先提供主題或選項，我可以用規則幫你做優缺點比較。"
+
+    if len(msg) <= 12 and ("?" in msg or "？" in msg):
+        return "問題內容不夠完整，請補充主題、目標或限制條件。"
+
+    return "Agent 模式不使用 LLM。請給我更具體的目標，我可提供規則化協助（算式、時間、簡單比較、格式整理）。"
 
 def local_quick_reply(user_message: str, history: list) -> str | None:
     """Use local Ollama model to decide simple-vs-complex and optionally answer directly.
@@ -763,7 +899,12 @@ async def astream_executor(
                         final_output = output_data
 
             elif ev_name == "on_chat_model_start":
-                yield {"event": "status", "phase": "llm_requesting", "label": "正在與 LLM 溝通"}
+                vendor = _llm_vendor_label(ev.get("data", {}).get("serialized"))
+                yield {
+                    "event": "status",
+                    "phase": "llm_requesting",
+                    "label": f"正在與 {vendor} 溝通",
+                }
 
             elif ev_name == "on_chat_model_end":
                 # If the model decided to call tools, signal that.

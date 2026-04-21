@@ -48,7 +48,7 @@ export interface ChatEntry {
   updated_at: string
 }
 
-export type LLMMode = 'auto' | 'gemini'
+export type LLMMode = 'auto' | 'gemini' | 'agent'
 
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
