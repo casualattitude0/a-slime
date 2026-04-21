@@ -187,6 +187,48 @@ _NON_VAGUE_QUESTION_HINTS = (
     "which",
 )
 
+def _is_ollama_llm(llm: BaseChatModel) -> bool:
+    return "ollama" in type(llm).__name__.lower()
+
+
+def _extract_memory_save_content(message: str) -> str | None:
+    s = (message or "").strip()
+    if not s:
+        return None
+    cues = ("記錄", "紀錄", "記住", "幫我記", "存起來", "save to memory")
+    low = s.lower()
+    if not any((c in s) for c in cues[:-1]) and cues[-1] not in low:
+        return None
+    cleaned = re.sub(r"^(ollama|gemini)\s*", "", s, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^(請|幫我|麻煩|可以)?\s*(記錄|紀錄|記住|幫我記|存起來)\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(哦|喔|吧|一下)$", "", cleaned).strip()
+    return cleaned or None
+
+
+def _format_chat_history_as_text(history: Any) -> str:
+    if not history:
+        return ""
+    if isinstance(history, str):
+        return history
+    lines: list[str] = []
+    for m in history:
+        role = getattr(m, "type", "") or ""
+        content = getattr(m, "content", "") or ""
+        if isinstance(content, list):
+            content = " ".join(
+                p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+            )
+        label = "Assistant" if "ai" in role.lower() else "User"
+        if str(content).strip():
+            lines.append(f"{label}: {content}")
+    return "\n".join(lines)
+
+
+_PYTHON_TOOL_CALL_RE = re.compile(
+    r"\{[A-Za-z_]\w*\([^{}]*\)\}",
+    re.DOTALL,
+)
+
 _VAGUE_SHORT_RE = re.compile(
     r"^(?:哇(?:塞)?|真的假的|嗯+|喔+|哦+|蛤+|哈+|是喔|原來如此|好吧|太多了|這麼多)+[!！?？~～。．…\s]*$",
     re.IGNORECASE,
@@ -638,11 +680,20 @@ def local_quick_reply(user_message: str, history: list) -> str | None:
 class _PrefetchExecutor:
     """Delegates to AgentExecutor; optional prefetch merges retriever chunks into input."""
 
-    __slots__ = ("_executor", "_retriever")
+    __slots__ = ("_executor", "_retriever", "_is_ollama", "_save_memory_tool")
 
-    def __init__(self, executor: AgentExecutor, retriever: Any) -> None:
+    def __init__(
+        self,
+        executor: AgentExecutor,
+        retriever: Any,
+        *,
+        is_ollama: bool = False,
+        save_memory_tool: Any = None,
+    ) -> None:
         object.__setattr__(self, "_executor", executor)
         object.__setattr__(self, "_retriever", retriever)
+        object.__setattr__(self, "_is_ollama", is_ollama)
+        object.__setattr__(self, "_save_memory_tool", save_memory_tool)
 
     def invoke(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         config = kwargs.pop("config", None)
@@ -656,6 +707,13 @@ class _PrefetchExecutor:
         else:
             payload = {}
         base_input = payload.get("input")
+        if object.__getattribute__(self, "_is_ollama") and isinstance(base_input, str):
+            mem_content = _extract_memory_save_content(base_input)
+            if mem_content:
+                save_tool = object.__getattribute__(self, "_save_memory_tool")
+                if save_tool is not None:
+                    save_result = save_tool.func(mem_content, tags="提醒,會議")
+                    return {"output": f"已幫你記住：{mem_content}\n（{save_result}）"}
         retriever = object.__getattribute__(self, "_retriever")
         if (
             _prefetch_rag_into_input_enabled()
@@ -861,6 +919,7 @@ def build_executor(
         "4. 彈性應變：簡單任務可直接回覆；複雜任務則在背後完成多步驟蒐集與推理，再提供精煉且有價值的答案。\n"
         "5. 回覆內容：僅引用實際使用到的來源，且禁止捏造引用；必要時可用 save_to_memory 保存可持續利用的結論。\n"
         "6. 表達限制：禁止輸出角色動作舞台描述（例如 [核心光點微微閃爍]、【冒泡】）；僅輸出正常敘述文字。\n"
+        "7. 工具呼叫限制：嚴禁在回覆文字中以任何形式輸出工具呼叫語法（例如 {{save_to_memory(...)}}、save_to_memory(content=...)）。工具只能透過系統工具呼叫介面執行，絕不可用文字呈現。\n"
         "禁止捏造引用。若輸入中出現嵌入的本機文件（[Embedded local documents — ...]），視為可選參考資料。"
     )
     system_parts = [system_intro]
@@ -888,7 +947,42 @@ def build_executor(
         reasoning_tool,
         retriever_tool,
     ]
-    agent = create_tool_calling_agent(chat_model, tools, prompt)
+    save_memory_tool = next((t for t in memory_tools if getattr(t, "name", "") == "save_to_memory"), None)
+    if _is_ollama_llm(chat_model):
+        from langchain_classic.agents import create_react_agent  # noqa: PLC0415
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.runnables import RunnableLambda
+
+        react_template = (
+            system_message
+            + "\n\n---\n"
+            "You can use the following tools:\n{tools}\n\n"
+            "If you need a tool, use EXACTLY this format:\n"
+            "Thought: decide what to do next\n"
+            "Action: one of [{tool_names}]\n"
+            "Action Input: valid JSON for that tool\n"
+            "Observation: tool result\n\n"
+            "When you have enough information, respond EXACTLY:\n"
+            "Thought: I now know the final answer\n"
+            "Final Answer: [must be Traditional Chinese, no tool syntax]\n\n"
+            "Conversation history:\n{chat_history}\n\n"
+            "Question: {input}\n"
+            "Thought:{agent_scratchpad}"
+        )
+        react_prompt = PromptTemplate(
+            input_variables=["tools", "tool_names", "input", "agent_scratchpad", "chat_history"],
+            template=react_template,
+        )
+        _raw_react_agent = create_react_agent(chat_model, tools, react_prompt)
+
+        def _preprocess_react(inputs: dict[str, Any]) -> dict[str, Any]:
+            out = dict(inputs)
+            out["chat_history"] = _format_chat_history_as_text(inputs.get("chat_history"))
+            return out
+
+        agent = RunnableLambda(_preprocess_react) | _raw_react_agent
+    else:
+        agent = create_tool_calling_agent(chat_model, tools, prompt)
     verbose = os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
     executor = AgentExecutor(
         agent=agent,
@@ -897,7 +991,12 @@ def build_executor(
         handle_parsing_errors=True,
         max_iterations=10,
     )
-    return _PrefetchExecutor(executor, retriever)
+    return _PrefetchExecutor(
+        executor,
+        retriever,
+        is_ollama=_is_ollama_llm(chat_model),
+        save_memory_tool=save_memory_tool,
+    )
 
 
 class LLMErrorInfo:
@@ -1068,11 +1167,23 @@ async def astream_executor(
     if isinstance(executor, _PrefetchExecutor):
         inner_exec = object.__getattribute__(executor, "_executor")
         retriever = object.__getattribute__(executor, "_retriever")
+        is_ollama = bool(object.__getattribute__(executor, "_is_ollama"))
+        save_memory_tool = object.__getattribute__(executor, "_save_memory_tool")
     else:
         inner_exec = executor
         retriever = None
+        is_ollama = False
+        save_memory_tool = None
 
     run_payload = dict(payload)
+    if is_ollama and isinstance(run_payload.get("input"), str):
+        mem_content = _extract_memory_save_content(run_payload.get("input", ""))
+        if mem_content and save_memory_tool is not None:
+            save_result = await asyncio.to_thread(save_memory_tool.func, mem_content, "提醒,會議")
+            final_text = f"已幫你記住：{mem_content}\n（{save_result}）"
+            yield {"event": "delta", "text": final_text}
+            yield {"event": "_done", "output": {"output": final_text}}
+            return
 
     # RAG prefetch (same logic as _PrefetchExecutor.invoke).
     if (
@@ -1322,4 +1433,5 @@ def normalize_agent_output(raw: Any) -> str:
         base = "\n\n".join(x for x in (prefix, plain) if x).strip()
 
     base = _strip_tool_json_objects_anywhere(_strip_tool_json_lines(base))
+    base = _PYTHON_TOOL_CALL_RE.sub("", base).strip()
     return base.strip()
