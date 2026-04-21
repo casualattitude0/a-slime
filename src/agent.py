@@ -141,7 +141,7 @@ _status_tls = threading.local()
 
 
 def _prefetch_rag_into_input_enabled() -> bool:
-    v = (os.environ.get("AGENT_RAG_PREFETCH") or "").strip().lower()
+    v = (os.environ.get("AGENT_RAG_PREFETCH") or "1").strip().lower()
     return v in ("1", "true", "yes", "on")
 
 
