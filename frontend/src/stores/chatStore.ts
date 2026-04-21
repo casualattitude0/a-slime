@@ -580,9 +580,28 @@ export const useChatStore = defineStore('chat', () => {
 
   async function createNewChat(): Promise<string | null> {
     messages.value = []
-    setSessionId(null)
-    _setActiveChatId(null)
-    return null
+    status.value = ''
+    pendingLLMError.value = null
+    streamingBotIndex.value = -1
+    streamingReply.value = ''
+
+    try {
+      const url = activeVersionId.value
+        ? `/api/chats?version_id=${encodeURIComponent(activeVersionId.value)}`
+        : '/api/chats'
+      const res = await fetch(url, { method: 'POST' })
+      if (!res.ok) return null
+      const entry = await res.json()
+      const newId = typeof entry?.chat_id === 'string' ? entry.chat_id : null
+      if (!newId) return null
+
+      setSessionId(newId)
+      _setActiveChatId(newId)
+      await fetchChats()
+      return newId
+    } catch {
+      return null
+    }
   }
 
   async function switchToChat(chatId: string): Promise<boolean> {
