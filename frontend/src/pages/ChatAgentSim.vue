@@ -98,8 +98,12 @@ function handleSend(payload: { text: string; llmMode: 'auto' | 'gemini' }) {
     if (i >= full.length) finish()
   }
 
-  tick()
-  if (i < full.length) streamTimer = setInterval(tick, 28)
+  // Defer first tick so Vue paints [data-bot-streaming] before tick() can call finish()
+  // on short messages (otherwise streamingBotIndex flips -1→n→-1 in one sync turn and fly skips).
+  requestAnimationFrame(() => {
+    tick()
+    if (i < full.length) streamTimer = setInterval(tick, 28)
+  })
 }
 
 function handleTerminate() {
