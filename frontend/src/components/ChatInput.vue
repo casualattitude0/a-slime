@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, watch } from 'vue'
 import { SendHorizontal, Square } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -16,6 +16,7 @@ const input = ref('')
 const llmMode = ref<'auto' | 'gemini' | 'agent'>('auto')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const isComposingWithIME = ref(false)
+const llmModeStorageKey = 'chat_input_llm_mode'
 
 const adjustHeight = () => {
   if (!textareaRef.value) return
@@ -52,7 +53,15 @@ const terminate = () => {
 }
 
 onMounted(() => {
+  const savedLlmMode = localStorage.getItem(llmModeStorageKey)
+  if (savedLlmMode === 'auto' || savedLlmMode === 'gemini' || savedLlmMode === 'agent') {
+    llmMode.value = savedLlmMode
+  }
   textareaRef.value?.focus()
+})
+
+watch(llmMode, (value) => {
+  localStorage.setItem(llmModeStorageKey, value)
 })
 </script>
 
