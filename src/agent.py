@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.tools import (
     make_memory_tools,
     make_reasoning_tool,
+    make_shell_tool,
     make_web_fetch_tool,
     make_web_search_tool,
 )
@@ -480,6 +481,7 @@ def build_executor(
 
     web_search_tool = make_web_search_tool()
     web_fetch_tool = make_web_fetch_tool()
+    shell_tool = make_shell_tool()
     mem_col = memory_collection or "agent_memory"
     memory_tools = make_memory_tools(chroma_path, embeddings, collection_name=mem_col)
     reasoning_tool = make_reasoning_tool()
@@ -499,8 +501,11 @@ def build_executor(
                 "- save_to_memory：儲存可長期重用的重要資訊（使用者偏好、決策、關鍵發現）。僅保存有意義且可重用的內容。\n"
                 "- web_search：使用 DuckDuckGo 搜尋最新網路資訊。\n"
                 "- web_fetch：擷取並清理指定網址文字內容，可搭配 web_search 讀取候選結果。\n"
+                "- execute_shell_command：執行本機 Shell 指令（如 date、grep、tail、ls）以獲取系統時間、讀取日誌或抓取特定資料。\n"
                 "- ask_reasoning_model：將複雜、多步驟的分析或綜整委派給更強的推理模型，並明確附上問題與已蒐集脈絡。\n"
                 "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
+                "即時性規則：\n"
+                "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
                 "工作流程：\n"
                 "若任務非常簡單（例如打招呼、瑣碎事實查詢、直接澄清），可直接回覆而不呼叫工具。否則先拆解任務並判斷是否需要子代理。\n"
                 "1. 區分任務：將使用者需求拆成有順序的子任務，並決定各子任務要使用的工具（search_memory、web_search、web_fetch、document_search、ask_reasoning_model）。\n"
@@ -517,6 +522,7 @@ def build_executor(
         *memory_tools,
         web_search_tool,
         web_fetch_tool,
+        shell_tool,
         reasoning_tool,
         retriever_tool,
     ]
@@ -650,6 +656,7 @@ def _tool_name_to_status(name: str) -> tuple[str, str]:
         "web_fetch": ("tool_running", "擷取網頁內容"),
         "search_memory": ("tool_running", "查詢長期記憶"),
         "save_to_memory": ("tool_running", "儲存至長期記憶"),
+        "execute_shell_command": ("tool_running", "執行 Shell 指令"),
         "ask_reasoning_model": ("tool_running", "委派推理模型"),
     }
     if name in _map:

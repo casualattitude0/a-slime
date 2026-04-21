@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -308,4 +310,57 @@ def make_reasoning_tool() -> StructuredTool:
         ),
         func=_ask,
         args_schema=AskReasoningArgs,
+    )
+
+
+class ShellCommandArgs(BaseModel):
+    command: str = Field(description="Shell command to execute locally")
+
+
+def _run_shell_command(command: str) -> str:
+    cmd = (command or "").strip()
+    if not cmd:
+        return "Empty shell command."
+    try:
+        # Validate basic shell syntax early for clearer feedback.
+        shlex.split(cmd)
+    except ValueError as exc:
+        return f"Invalid shell command: {exc}"
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return "Shell command timed out after 10 seconds."
+    except Exception as exc:
+        return f"Shell command failed: {exc}"
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    parts: list[str] = [f"exit_code: {result.returncode}"]
+    if stdout:
+        parts.append(f"stdout:\n{stdout}")
+    if stderr:
+        parts.append(f"stderr:\n{stderr}")
+    if len(parts) == 1:
+        parts.append("No output.")
+    text = "\n\n".join(parts)
+    if len(text) > 10000:
+        text = text[:10000] + "\n\n... [truncated]"
+    return text
+
+
+def make_shell_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        name="execute_shell_command",
+        description=(
+            "Execute local shell commands (e.g. date, grep, tail, ls) to retrieve "
+            "system data, inspect logs, or extract specific text."
+        ),
+        func=_run_shell_command,
+        args_schema=ShellCommandArgs,
     )

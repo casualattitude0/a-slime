@@ -211,6 +211,29 @@ def _simple_local_reply(message: str) -> str | None:
     return None
 
 
+def _requires_live_time_lookup(message: str) -> bool:
+    msg = (message or "").strip().lower()
+    if not msg:
+        return False
+    keywords = (
+        "今天",
+        "現在",
+        "日期",
+        "時間",
+        "幾點",
+        "幾號",
+        "今日",
+        "today",
+        "current date",
+        "current time",
+        "what date",
+        "what time",
+        "date now",
+        "time now",
+    )
+    return any(k in msg for k in keywords)
+
+
 # ─── Request / Response models ────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
@@ -460,7 +483,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             payload={"input_text": msg, "llm_mode": req.llm_mode},
         )
         local_reply = _simple_local_reply(msg)
-        if local_reply is None:
+        if local_reply is None and not _requires_live_time_lookup(msg):
             local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
         used_local_reply = local_reply is not None
         if used_local_reply:
@@ -589,7 +612,7 @@ async def _resolve_session(
             cancel_event.clear()
 
         local_reply = _simple_local_reply(msg)
-        if local_reply is None:
+        if local_reply is None and not _requires_live_time_lookup(msg):
             local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
 
         if local_reply is not None:
