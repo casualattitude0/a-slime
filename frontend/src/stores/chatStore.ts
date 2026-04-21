@@ -95,6 +95,7 @@ export const useChatStore = defineStore('chat', () => {
       thinking: '分析問題中',
       route_deciding: '路由決策中',
       llm_requesting: '正在與 LLM 溝通',
+      llm_requesting_model: label,
       llm_streaming: '模型回覆中',
       tool_planning: '規劃工具呼叫',
       tool_result_processing: '整合工具結果',
