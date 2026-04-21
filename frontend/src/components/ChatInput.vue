@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { SendHorizontal, Square } from 'lucide-vue-next'
+import { useChatStore } from '../stores/chatStore'
 
 const props = defineProps<{
   disabled: boolean
@@ -8,12 +10,15 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' | 'agent' }): void
+  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent' }): void
   (e: 'terminate'): void
 }>()
 
+const chatStore = useChatStore()
+const { availableProfiles, nvidiaChatModel } = storeToRefs(chatStore)
+
 const input = ref('')
-const llmMode = ref<'auto' | 'gemini' | 'agent'>('auto')
+const llmMode = ref<'auto' | 'gemini' | 'nvidia' | 'agent'>('auto')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const isComposingWithIME = ref(false)
 const llmModeStorageKey = 'chat_input_llm_mode'
@@ -54,8 +59,13 @@ const terminate = () => {
 
 onMounted(() => {
   const savedLlmMode = localStorage.getItem(llmModeStorageKey)
-  if (savedLlmMode === 'auto' || savedLlmMode === 'gemini' || savedLlmMode === 'agent') {
-    llmMode.value = savedLlmMode
+  if (
+    savedLlmMode === 'auto' ||
+    savedLlmMode === 'gemini' ||
+    savedLlmMode === 'nvidia' ||
+    savedLlmMode === 'agent'
+  ) {
+    llmMode.value = savedLlmMode as typeof llmMode.value
   }
   textareaRef.value?.focus()
 })
@@ -63,15 +73,36 @@ onMounted(() => {
 watch(llmMode, (value) => {
   localStorage.setItem(llmModeStorageKey, value)
 })
+
+watch(
+  availableProfiles,
+  (profiles) => {
+    if (llmMode.value === 'nvidia' && !profiles.includes('nvidia')) {
+      llmMode.value = 'auto'
+      localStorage.setItem(llmModeStorageKey, 'auto')
+    }
+  },
+  { flush: 'post' },
+)
 </script>
 
 <template>
   <div class="composer" :class="{ 'composer--disabled': disabled }">
-    <select v-model="llmMode" class="llm-select" :disabled="disabled || loading" aria-label="LLM mode">
-      <option value="auto">Auto</option>
-      <option value="gemini">Gemini</option>
-      <option value="agent">Agent</option>
-    </select>
+    <div class="llm-mode-row">
+      <select v-model="llmMode" class="llm-select" :disabled="disabled || loading" aria-label="LLM mode">
+        <option value="auto">Auto</option>
+        <option value="gemini">Gemini</option>
+        <option v-if="availableProfiles.includes('nvidia')" value="nvidia">NVIDIA</option>
+        <option value="agent">Agent</option>
+      </select>
+      <span
+        v-if="nvidiaChatModel && availableProfiles.includes('nvidia')"
+        class="nvidia-model-tag"
+        :title="'NVIDIA_MODEL (' + nvidiaChatModel + ')'"
+      >
+        {{ nvidiaChatModel }}
+      </span>
+    </div>
     <textarea
       ref="textareaRef"
       v-model="input"
@@ -144,6 +175,14 @@ watch(llmMode, (value) => {
   color: var(--text-dim);
 }
 
+.llm-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: min(52vw, 340px);
+}
+
 .llm-select {
   background: var(--surface-2);
   border: 1px solid var(--border-bright);
@@ -154,6 +193,18 @@ watch(llmMode, (value) => {
   padding: 0 8px;
   outline: none;
   flex-shrink: 0;
+  min-width: 0;
+}
+
+.nvidia-model-tag {
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  color: var(--text-dim);
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
 }
 
 .llm-select:disabled {

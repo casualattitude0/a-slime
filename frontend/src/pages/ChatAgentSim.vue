@@ -65,7 +65,7 @@ onUnmounted(() => {
   stopStream()
 })
 
-function handleSend(payload: { text: string; llmMode: 'auto' | 'gemini' | 'agent' }) {
+function handleSend(payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent' }) {
   const { text } = payload
   if (!text.trim() || isLoading.value) return
 
@@ -432,11 +432,12 @@ function handleClear() {
   border: 1px solid rgba(var(--secondary-rgb), 0.5);
   background: rgba(var(--secondary-rgb), 0.2);
   color: rgba(223, 212, 255, 0.96);
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+  line-height: 1.65;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
   box-shadow:
     0 4px 18px rgba(0, 0, 0, 0.35),
     0 0 0 1px rgba(var(--accent-rgb), 0.14) inset;

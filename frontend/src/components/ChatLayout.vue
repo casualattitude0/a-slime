@@ -11,6 +11,7 @@ import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 import { useHeroToChatBubbleFly } from '../composables/useHeroToChatBubbleFly'
 import { useChatMessageSplit } from '../composables/useChatMessageSplit'
 import type { Message } from '../stores/chatStore'
+import { formatModelProfileLabel } from '../utils/modelProfile'
 
 const chatStore = useChatStore()
 const {
@@ -122,7 +123,7 @@ onMounted(async () => {
   }
 })
 
-const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' | 'agent' }) => {
+const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent' }) => {
   chatStore.sendMessage(payload.text, payload.llmMode)
   focusNewestTurn()
 }
@@ -151,10 +152,12 @@ function handleFeedbackForActiveUser(rating: number) {
   if (e) handleFeedback(rating, e.msg.messageRef)
 }
 
-const activeVersionName = () => {
-  const v = versions.value.find((v) => v.version_id === activeVersionId.value)
-  return v?.name ?? '—'
-}
+const activeVersionBadge = computed(() => {
+  const v = versions.value.find((x) => x.version_id === activeVersionId.value)
+  if (!v) return '—'
+  const model = formatModelProfileLabel(v.model_profile)
+  return `${v.name} · ${model}`
+})
 
 /** Which message row stays hidden until the fly overlay lands (survives streamingBotIndex clearing on done). */
 const hideBubbleUntilFlyIndex = ref<number | null>(null)
@@ -201,7 +204,7 @@ useHeroToChatBubbleFly({
           <span class="status-dot" :class="isLoading ? 'dot-active' : ''"></span>
           <span class="agent-name">LOCAL AGENT</span>
         </div>
-        <span class="version-badge">{{ activeVersionName() }}</span>
+        <span class="version-badge">{{ activeVersionBadge }}</span>
       </div>
 
       <div class="flex items-center gap-1">
@@ -1035,11 +1038,12 @@ useHeroToChatBubbleFly({
   border: 1px solid rgba(var(--secondary-rgb), 0.5);
   background: rgba(var(--secondary-rgb), 0.2);
   color: rgba(223, 212, 255, 0.96);
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+  line-height: 1.65;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
   box-shadow:
     0 4px 18px rgba(0, 0, 0, 0.35),
     0 0 0 1px rgba(var(--accent-rgb), 0.14) inset;

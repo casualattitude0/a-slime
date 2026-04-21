@@ -48,7 +48,7 @@ export interface ChatEntry {
   updated_at: string
 }
 
-export type LLMMode = 'auto' | 'gemini' | 'agent'
+export type LLMMode = 'auto' | 'gemini' | 'nvidia' | 'agent'
 
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
@@ -62,6 +62,8 @@ export const useChatStore = defineStore('chat', () => {
   const versions = ref<VersionEntry[]>([])
   const activeVersionId = ref<string | null>(null)
   const availableProfiles = ref<string[]>(['default'])
+  /** Resolved NVIDIA catalog model id when NVIDIA_API_KEY is set (from server). */
+  const nvidiaChatModel = ref<string | null>(null)
 
   const memoryItems = ref<MemoryItem[]>([])
   const memoryLoading = ref<boolean>(false)
@@ -411,8 +413,17 @@ export const useChatStore = defineStore('chat', () => {
       lines.push('1. 服務暫時不可用，請稍後重試')
       lines.push('2. 確認網路連線是否正常')
     } else {
-      lines.push('1. 檢查 GOOGLE_API_KEY / GEMINI_API_KEY 是否正確設定')
-      lines.push('2. 確認模型名稱與可用區域')
+      const m = (payload.message || '').toLowerCase()
+      if (m.includes('nvidia') || m.includes('nvapi') || m.includes('404') || m.includes('not found')) {
+        lines.push(
+          '1. 檢查 `NVIDIA_API_KEY` 與 `NVIDIA_MODEL`（catalog 格式如 `z-ai/glm-5.1`，與 build.nvidia.com 網址路徑一致）',
+        )
+        lines.push('2. 若未自架 NIM，請刪除或註解 `NVIDIA_BASE_URL`；錯誤的 base URL 常導致 404 / Page not found')
+        lines.push('3. 在 [NVIDIA build](https://build.nvidia.com) 確認該模型已啟用且帳號有權限')
+      } else {
+        lines.push('1. 檢查 GOOGLE_API_KEY / GEMINI_API_KEY 是否正確設定')
+        lines.push('2. 確認模型名稱與可用區域')
+      }
     }
     if (payload.retry_after_seconds) {
       lines.push(`4. 建議等待 ${payload.retry_after_seconds} 秒後再試`)
@@ -468,6 +479,10 @@ export const useChatStore = defineStore('chat', () => {
       versions.value = data.versions ?? []
       activeVersionId.value = data.active_version_id ?? null
       availableProfiles.value = data.available_model_profiles ?? ['default']
+      nvidiaChatModel.value =
+        typeof data.nvidia_chat_model === 'string' && data.nvidia_chat_model
+          ? data.nvidia_chat_model
+          : null
     } catch {}
   }
 
@@ -796,6 +811,7 @@ export const useChatStore = defineStore('chat', () => {
     versions,
     activeVersionId,
     availableProfiles,
+    nvidiaChatModel,
     memoryItems,
     memoryLoading,
     ragItems,

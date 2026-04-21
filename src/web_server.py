@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -22,8 +22,10 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
 from src.agent import (
+    DEFAULT_NVIDIA_CATALOG_MODEL,
     LLMErrorInfo,
     _is_vague_short_utterance,
+    _rich_exception_message,
     astream_executor,
     build_executor,
     classify_llm_error,
@@ -33,6 +35,7 @@ from src.agent import (
     list_rag_items,
     agent_mode_reply,
     make_gemini_llm,
+    make_nvidia_llm,
     make_ollama_llm,
     normalize_agent_output,
     should_escalate_to_gemini,
@@ -414,7 +417,7 @@ async def _update_title_after_first_message(
 class ChatRequest(BaseModel):
     message: str = Field(default="")
     session_id: str | None = None
-    llm_mode: Literal["auto", "gemini", "agent"] = "auto"
+    llm_mode: Literal["auto", "gemini", "agent", "nvidia"] = "auto"
 
 
 class ChatResponse(BaseModel):
@@ -464,6 +467,8 @@ def _available_model_profiles() -> list[str]:
         profiles.append("ollama")
     if (os.environ.get("GEMINI_PRO_MODEL") or "").strip():
         profiles.append("gemini-pro")
+    if (os.environ.get("NVIDIA_API_KEY") or "").strip():
+        profiles.append("nvidia")
     return profiles
 
 
@@ -480,6 +485,8 @@ def _build_executor_for_profile(
         llm = make_gemini_llm(model=pro)
     elif model_profile == "gemini":
         llm = make_gemini_llm()
+    elif model_profile == "nvidia":
+        llm = make_nvidia_llm()
     else:
         llm = make_gemini_llm()
 
@@ -525,10 +532,14 @@ def _get_executor_for_llm_mode(
     version_id: str,
     user_message: str,
     history_len: int,
-    llm_mode: Literal["auto", "gemini", "agent"],
+    llm_mode: Literal["auto", "gemini", "agent", "nvidia"],
 ) -> Any:
     if llm_mode == "gemini":
         return getattr(app.state, "executor_gemini", None) or _get_executor(
+            app, version_id, user_message, history_len
+        )
+    if llm_mode == "nvidia":
+        return getattr(app.state, "executor_nvidia", None) or _get_executor(
             app, version_id, user_message, history_len
         )
 
@@ -539,11 +550,22 @@ def _get_executor_for_llm_mode(
     return _get_executor(app, version_id, user_message, history_len)
 
 
-def _executor_model_label(app: FastAPI, executor: Any) -> str:
+def _executor_model_label(app: FastAPI, executor: Any, model_profile: str) -> str:
+    nv_ex = getattr(app.state, "executor_nvidia", None)
+    if nv_ex is not None and executor is nv_ex:
+        return "NVIDIA"
+    if model_profile == "nvidia":
+        return "NVIDIA"
     ollama_ex = getattr(app.state, "executor_ollama", None)
     if ollama_ex is not None and executor is ollama_ex:
         return "Ollama"
     return "Gemini"
+
+
+def _nvidia_chat_model_display(fa: FastAPI) -> str | None:
+    if getattr(fa.state, "executor_nvidia", None) is None:
+        return None
+    return (os.environ.get("NVIDIA_MODEL") or DEFAULT_NVIDIA_CATALOG_MODEL).strip()
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -583,6 +605,23 @@ async def _lifespan(app: FastAPI):
             )
         else:
             app.state.executor_ollama = None
+        app.state.executor_nvidia = None
+        if (os.environ.get("NVIDIA_API_KEY") or "").strip():
+            try:
+                app.state.executor_nvidia = build_executor(
+                    chroma_dir=app.state.chroma_dir,
+                    llm=make_nvidia_llm(),
+                )
+            except ModuleNotFoundError:
+                app.state.available_profiles = [
+                    p for p in app.state.available_profiles if p != "nvidia"
+                ]
+                print(
+                    "WARNING: NVIDIA_API_KEY is set but langchain-nvidia-ai-endpoints "
+                    "is not installed. NVIDIA chat disabled. Run: pip install "
+                    "langchain-nvidia-ai-endpoints",
+                    flush=True,
+                )
         app.state.executor = app.state.executor_ollama or app.state.executor_gemini
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
@@ -678,6 +717,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
             local_reply = agent_mode_reply(msg, hist)
         elif req.llm_mode == "gemini":
             local_reply = None
+        elif req.llm_mode == "nvidia":
+            local_reply = None
         else:
             local_reply = _simple_local_reply(msg)
             if local_reply is None:
@@ -767,7 +808,7 @@ async def _resolve_session(
     app: FastAPI,
     req_session_id: str | None,
     msg: str,
-    llm_mode: Literal["auto", "gemini", "agent"] = "auto",
+    llm_mode: Literal["auto", "gemini", "agent", "nvidia"] = "auto",
 ) -> tuple[str, list[BaseMessage], Any, dict[str, Any] | None, threading.Event]:
     """Resolve (or create) a session and return the objects needed for streaming.
 
@@ -817,6 +858,8 @@ async def _resolve_session(
             local_reply = agent_mode_reply(msg, hist)
         elif llm_mode == "gemini":
             local_reply = None
+        elif llm_mode == "nvidia":
+            local_reply = None
         else:
             local_reply = _simple_local_reply(msg)
             if local_reply is None:
@@ -842,7 +885,7 @@ async def _resolve_session(
             "input": msg,
             "chat_history": history_for_prompt,
             "version_id": version.version_id,
-            "llm_model_label": _executor_model_label(app, executor),
+            "llm_model_label": _executor_model_label(app, executor, version.model_profile),
         }
         return sid, history_for_prompt, executor, payload, cancel_event
 
@@ -908,7 +951,7 @@ async def _stream_pipeline(
                 err = err_info.message
                 llm_error_payload = err_info.to_dict()
             else:
-                err = str(exc)
+                err = _rich_exception_message(exc)
             _record_agent_event(
                 event_type="chat_error",
                 session_id=sid,
@@ -943,6 +986,8 @@ async def _stream_pipeline(
                 phase = "llm_requesting_model"
                 model_label = str(payload.get("llm_model_label") or "LLM")
                 label = f"正在與 {model_label} 溝通"
+                if model_label == "NVIDIA":
+                    label += "（長推理／工具迴圈可數分鐘；無串流 token 時畫面會停在此）"
                 ev["phase"] = phase
                 ev["label"] = label
             _record_agent_event(
@@ -1106,7 +1151,7 @@ async def ws_chat_live(websocket: WebSocket):
 
             req_session_id: str | None = data.get("session_id") or None
             llm_mode = data.get("llm_mode")
-            if llm_mode not in ("auto", "gemini", "agent"):
+            if llm_mode not in ("auto", "gemini", "agent", "nvidia"):
                 llm_mode = "auto"
 
             try:
@@ -1294,12 +1339,13 @@ async def terminate_chat(req: TerminateRequest) -> dict[str, bool]:
 # ─── Version endpoints ────────────────────────────────────────────────────────
 
 @app.get("/api/versions")
-async def get_versions() -> dict[str, Any]:
-    registry: VersionRegistry = app.state.version_registry
+async def get_versions(request: Request) -> dict[str, Any]:
+    registry: VersionRegistry = request.app.state.version_registry
     return {
         "versions": registry.list_versions(),
         "active_version_id": registry.get_active_id(),
-        "available_model_profiles": app.state.available_profiles,
+        "available_model_profiles": request.app.state.available_profiles,
+        "nvidia_chat_model": _nvidia_chat_model_display(request.app),
     }
 
 

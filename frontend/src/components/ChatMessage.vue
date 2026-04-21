@@ -29,7 +29,6 @@ const emit = defineEmits<{
 }>()
 
 const md = new MarkdownIt({
-  breaks: true,
   linkify: true,
 })
 
@@ -211,7 +210,8 @@ const roleLabel = computed(() => {
   font-size: 14px;
   color: var(--text);
   white-space: pre-wrap;
-  word-break: break-words;
+  word-break: normal;
+  overflow-wrap: break-word;
   line-height: 1.55;
   max-height: 45vh;
   overflow-y: auto;
@@ -251,7 +251,8 @@ const roleLabel = computed(() => {
   font-size: 13px;
   color: var(--error);
   white-space: pre-wrap;
-  word-break: break-words;
+  word-break: normal;
+  overflow-wrap: break-word;
   line-height: 1.55;
   max-height: 45vh;
   overflow-y: auto;
@@ -296,7 +297,8 @@ const roleLabel = computed(() => {
   font-size: 14px;
   color: var(--text);
   line-height: 1.65;
-  word-break: break-words;
+  word-break: normal;
+  overflow-wrap: break-word;
   max-height: 45vh;
   overflow-y: auto;
 }
@@ -361,7 +363,8 @@ const roleLabel = computed(() => {
   color: rgba(223, 212, 255, 0.78);
   font-style: italic;
   line-height: 1.55;
-  word-break: break-words;
+  word-break: normal;
+  overflow-wrap: break-word;
   letter-spacing: 0.01em;
 }
 </style>

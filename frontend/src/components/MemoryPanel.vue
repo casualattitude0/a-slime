@@ -15,6 +15,7 @@ import {
   RefreshCw,
 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
+import { formatModelProfileLabel } from '../utils/modelProfile'
 
 const chatStore = useChatStore()
 const {
@@ -149,7 +150,7 @@ onMounted(async () => {
               <Check v-if="v.is_active" :size="11" class="check-icon" />
               <span class="ver-name">{{ v.name }}</span>
             </div>
-            <div class="ver-meta">{{ v.model_profile }}</div>
+            <div class="ver-meta">{{ formatModelProfileLabel(v.model_profile) }}</div>
             <div class="ver-date">{{ fmtDate(v.created_at) }}</div>
           </div>
           <div class="ver-actions">
@@ -185,7 +186,9 @@ onMounted(async () => {
           class="panel-input"
         />
         <select v-model="newVersionProfile" class="panel-input">
-          <option v-for="p in availableProfiles" :key="p" :value="p">{{ p }}</option>
+          <option v-for="p in availableProfiles" :key="p" :value="p">
+            {{ formatModelProfileLabel(p) }}
+          </option>
         </select>
         <div class="flex gap-1.5">
           <button

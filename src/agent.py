@@ -30,6 +30,9 @@ from src.tools import (
 
 _DEFAULT_RAG_COLLECTION = "langchain"
 
+# NVIDIA API Catalog slug (see https://build.nvidia.com/z-ai/glm-5.1/modelcard )
+DEFAULT_NVIDIA_CATALOG_MODEL = "z-ai/glm-5.1"
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -311,6 +314,8 @@ def _llm_vendor_label(serialized: dict[str, Any] | None) -> str:
         return "OpenAI"
     if "anthropic" in joined or "claude" in joined:
         return "Claude"
+    if "nvidia" in joined or "chatnvidia" in joined:
+        return "NVIDIA"
     return "LLM"
 
 
@@ -414,6 +419,86 @@ def make_gemini_llm(*, model: str | None = None) -> BaseChatModel:
         raise ValueError("Set GOOGLE_API_KEY or GEMINI_API_KEY for Gemini.")
     m = model or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     return ChatGoogleGenerativeAI(model=m, temperature=0, google_api_key=api_key)
+
+
+def _patch_nvidia_http_request_timeout(llm: BaseChatModel, timeout_sec: float) -> None:
+    """langchain-nvidia-ai-endpoints uses requests without timeouts; hangs look like UI freeze."""
+    client = getattr(llm, "_client", None)
+    if client is None:
+        return
+    orig_factory = getattr(client, "_create_session", None)
+    if not callable(orig_factory):
+        return
+
+    def wrapped_factory() -> Any:
+        sess = orig_factory()
+        orig_request = sess.request
+
+        def bound_request(method: str, url: str, **kwargs: Any) -> Any:
+            kwargs.setdefault("timeout", timeout_sec)
+            return orig_request(method, url, **kwargs)
+
+        sess.request = bound_request  # type: ignore[method-assign]
+        return sess
+
+    client.get_session_fn = wrapped_factory  # type: ignore[method-assign]
+
+
+def _patch_nvidia_aiohttp_stream_timeout(llm: BaseChatModel, timeout_sec: float) -> None:
+    """Streaming uses aiohttp ClientSession without total timeout by default."""
+    client = getattr(llm, "_client", None)
+    if client is None:
+        return
+    import aiohttp
+
+    def async_session_factory() -> Any:
+        connector = aiohttp.TCPConnector(ssl=client._build_ssl_context())
+        return aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(
+                total=timeout_sec,
+                sock_connect=min(45.0, timeout_sec),
+            ),
+        )
+
+    client.get_async_session_fn = async_session_factory  # type: ignore[method-assign]
+
+
+def make_nvidia_llm(*, model: str | None = None) -> BaseChatModel:
+    from langchain_nvidia_ai_endpoints import ChatNVIDIA
+
+    api_key = (os.environ.get("NVIDIA_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError("Set NVIDIA_API_KEY for NVIDIA chat models.")
+    m = (
+        model
+        or (os.environ.get("NVIDIA_MODEL") or DEFAULT_NVIDIA_CATALOG_MODEL).strip()
+    )
+    base_url = (os.environ.get("NVIDIA_BASE_URL") or "").strip() or None
+    kwargs: dict[str, Any] = {"model": m, "api_key": api_key, "temperature": 0}
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    llm = ChatNVIDIA(**kwargs)
+
+    raw_http = (os.environ.get("NVIDIA_REQUEST_TIMEOUT") or "180").strip()
+    try:
+        http_timeout = float(raw_http)
+        if http_timeout > 0:
+            _patch_nvidia_http_request_timeout(llm, http_timeout)
+            _patch_nvidia_aiohttp_stream_timeout(llm, http_timeout)
+    except ValueError:
+        pass
+
+    # NVIDIA client Field `timeout`: max poll duration after HTTP 202 (hosted async jobs).
+    poll_raw = (os.environ.get("NVIDIA_POLL_TIMEOUT") or "").strip()
+    if poll_raw:
+        try:
+            setattr(getattr(llm, "_client", None), "timeout", float(poll_raw))
+        except (TypeError, ValueError):
+            pass
+
+    return llm
 
 
 def _make_llm() -> BaseChatModel:
@@ -1048,7 +1133,7 @@ def _parse_retry_delay(text: str) -> float | None:
     return None
 
 
-_LLM_STATUS_CODES = {429, 500, 502, 503, 504}
+_LLM_STATUS_CODES = {401, 403, 404, 429, 500, 502, 503, 504}
 _LLM_ERROR_KEYWORDS = (
     "resource_exhausted",
     "rate_limit",
@@ -1064,10 +1149,35 @@ _LLM_ERROR_KEYWORDS = (
 )
 
 
+def _rich_exception_message(exc: BaseException) -> str:
+    """Include HTTP response body when present (NVIDIA/OpenAI-style clients hide details in ``str(exc)``)."""
+    lines: list[str] = []
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    depth = 0
+    while e is not None and depth < 12:
+        if id(e) in seen:
+            break
+        seen.add(id(e))
+        lines.append(str(e))
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            body = getattr(resp, "text", "") or ""
+            if isinstance(body, str) and body.strip():
+                snippet = body.strip()
+                if len(snippet) > 8000:
+                    snippet = snippet[:8000] + "\n… [truncated]"
+                lines.append(f"--- HTTP response ---\n{snippet}")
+        e = e.__cause__
+        depth += 1
+
+    return "\n\n".join(lines)
+
+
 def classify_llm_error(exc: BaseException) -> LLMErrorInfo:
     """Return LLMErrorInfo for any exception; ``is_llm_error`` is True only for provider errors."""
-    text = str(exc).lower()
-    raw = str(exc)
+    raw = _rich_exception_message(exc)
+    text = raw.lower()
 
     is_llm = False
     error_type = "unknown"
@@ -1082,13 +1192,23 @@ def classify_llm_error(exc: BaseException) -> LLMErrorInfo:
             is_llm = True
             break
 
+    if not is_llm and any(
+        k in text for k in ("not found", "invalid api", "nvidia", "nim", "client error", "server error")
+    ):
+        is_llm = True
+
+    if isinstance(exc, TimeoutError):
+        is_llm = True
+
     if is_llm:
         if "resource_exhausted" in text or "429" in raw or "quota" in text or "rate" in text:
             error_type = "quota_exceeded"
-        elif "timeout" in text:
+        elif isinstance(exc, TimeoutError) or "timeout" in text:
             error_type = "timeout"
         elif any(k in text for k in ("unavailable", "bad gateway", "gateway timeout", "overloaded")):
             error_type = "service_unavailable"
+        elif "404" in raw or "not found" in text:
+            error_type = "provider_error"
         else:
             error_type = "provider_error"
 
@@ -1228,10 +1348,28 @@ async def astream_executor(
     seen_first_text_delta = False
 
     try:
-        async for ev in inner_exec.astream_events(run_payload, version="v2"):
+        raw_idle = (os.environ.get("AGENT_STREAM_IDLE_TIMEOUT") or "600").strip()
+        try:
+            idle_timeout = float(raw_idle)
+        except ValueError:
+            idle_timeout = 600.0
+        if idle_timeout <= 0:
+            idle_timeout = 600.0
+
+        event_stream = inner_exec.astream_events(run_payload, version="v2")
+        while True:
             if cancel_check is not None and cancel_check():
                 yield {"event": "_cancelled"}
                 return
+            try:
+                ev = await asyncio.wait_for(anext(event_stream), timeout=idle_timeout)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError as te:
+                raise TimeoutError(
+                    f"Agent produced no stream activity for {idle_timeout:.0f}s "
+                    f"(AGENT_STREAM_IDLE_TIMEOUT). NVIDIA/GLM long runs may need a higher value."
+                ) from te
 
             ev_name: str = ev.get("event", "")
             run_id: str = ev.get("run_id", "")
