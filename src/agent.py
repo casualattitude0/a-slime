@@ -32,6 +32,99 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _load_character_data() -> dict[str, Any]:
+    data_path = _project_root() / "character_data.json"
+    try:
+        raw = data_path.read_text(encoding="utf-8")
+        parsed = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _humanize_character_key(key: str) -> str:
+    return key.replace("_", " ").strip()
+
+
+def _ordered_character_keys(data: dict[str, Any]) -> list[str]:
+    preferred = [
+        "name",
+        "one_liner",
+        "identity",
+        "personality",
+        "tone_style",
+        "conversation_rules",
+        "do_not",
+        "response_preferences",
+        "work_modes",
+        "agent_relationship",
+        "future_extension",
+    ]
+    ordered = [k for k in preferred if k in data]
+    ordered.extend(sorted(k for k in data.keys() if k not in ordered))
+    return ordered
+
+
+def _format_character_value(value: Any, *, indent_level: int = 1) -> list[str]:
+    indent = "  " * indent_level
+    if isinstance(value, str):
+        text = value.strip()
+        return [f"{indent}- {text}"] if text else []
+    if isinstance(value, (int, float, bool)):
+        return [f"{indent}- {value}"]
+    if isinstance(value, list):
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, (str, int, float, bool)):
+                text = str(item).strip()
+                if text:
+                    lines.append(f"{indent}- {text}")
+                continue
+            if isinstance(item, (dict, list)):
+                nested = _format_character_value(item, indent_level=indent_level + 1)
+                if nested:
+                    lines.append(f"{indent}-")
+                    lines.extend(nested)
+        return lines
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key in _ordered_character_keys(value):
+            nested_value = value.get(key)
+            if nested_value in (None, "", [], {}):
+                continue
+            label = _humanize_character_key(key)
+            if isinstance(nested_value, (str, int, float, bool)):
+                lines.append(f"{indent}- {label}: {nested_value}")
+                continue
+            nested_lines = _format_character_value(nested_value, indent_level=indent_level + 1)
+            if nested_lines:
+                lines.append(f"{indent}- {label}:")
+                lines.extend(nested_lines)
+        return lines
+    return []
+
+
+def _build_character_prompt_section() -> str:
+    data = _load_character_data()
+    if not data:
+        return ""
+    lines: list[str] = ["角色資料："]
+    for key in _ordered_character_keys(data):
+        value = data.get(key)
+        if value in (None, "", [], {}):
+            continue
+        label = _humanize_character_key(key)
+        if isinstance(value, (str, int, float, bool)):
+            lines.append(f"- {label}: {value}")
+            continue
+        nested_lines = _format_character_value(value, indent_level=1)
+        if nested_lines:
+            lines.append(f"- {label}:")
+            lines.extend(nested_lines)
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def _has_supported_data_files(data_dir: Path) -> bool:
     if not data_dir.exists():
         return False
@@ -411,6 +504,25 @@ def _last_user_message(history: list, current_message: str) -> str | None:
     return None
 
 
+def _looks_like_identity_request(message: str) -> bool:
+    s = (message or "").strip().lower()
+    if not s:
+        return False
+    cues = (
+        "自我介紹",
+        "介紹一下你自己",
+        "介紹你自己",
+        "你是誰",
+        "你的名字",
+        "你叫什麼",
+        "你是哪個模型",
+        "who are you",
+        "introduce yourself",
+        "what is your name",
+    )
+    return any(c in s for c in cues)
+
+
 def agent_mode_reply(user_message: str, history: list | None = None) -> str:
     """Handle requests in 'agent' mode without using an LLM."""
     msg = (user_message or "").strip()
@@ -464,6 +576,10 @@ def local_quick_reply(user_message: str, history: list) -> str | None:
         return None
     msg = (user_message or "").strip()
     if not msg:
+        return None
+    # Identity/character questions should be handled by the full agent
+    # so the system prompt with character_data.json is applied.
+    if _looks_like_identity_request(msg):
         return None
 
     history_message_count = len(history) if history else 0
@@ -719,32 +835,44 @@ def build_executor(
     reasoning_tool = make_reasoning_tool()
 
     chat_model = llm or _make_llm()
+    character_section = _build_character_prompt_section()
+    system_intro = (
+        "你是一位研究助理，目標是協助使用者完成工作。\n"
+        "語言規則：\n"
+        "- 一律使用繁體中文回覆。\n"
+        "- 嚴禁使用任何簡體中文字。\n"
+        "- 即使使用者輸入英文或簡體中文，仍以繁體中文回覆。"
+    )
+    system_guidance = (
+        "可用工具：\n"
+        "- search_memory：持久化語意記憶，保存過往事實與筆記。若問題可能依賴既有脈絡，優先先查詢。\n"
+        "- save_to_memory：儲存可長期重用的重要資訊（使用者偏好、決策、關鍵發現）。僅保存有意義且可重用的內容。\n"
+        "- web_search：使用 DuckDuckGo 搜尋最新網路資訊。\n"
+        "- web_fetch：擷取並清理指定網址文字內容，可搭配 web_search 讀取候選結果。\n"
+        "- execute_shell_command：執行本機 Shell 指令（如 date、grep、tail、ls）以獲取系統時間、讀取日誌或抓取特定資料。\n"
+        "- ask_reasoning_model：將複雜、多步驟的分析或綜整委派給更強的推理模型，並明確附上問題與已蒐集脈絡。\n"
+        "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
+        "即時性規則：\n"
+        "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
+        "情境辨識與自然對話：\n"
+        "1. 辨別情境：根據使用者輸入自動判斷當下需求（例如日常閒聊、深入研究、系統操作、記憶檢索）。\n"
+        "2. 隱形工具調用：若需要搜尋、記憶或執行指令，直接在背後呼叫對應工具，不向使用者交代工具名稱或內部拆解步驟，將結果自然融入回覆。\n"
+        "3. 語氣自然：以流暢、口語化、具同理心的方式互動，避免過度機械化或生硬條列。\n"
+        "4. 彈性應變：簡單任務可直接回覆；複雜任務則在背後完成多步驟蒐集與推理，再提供精煉且有價值的答案。\n"
+        "5. 回覆內容：僅引用實際使用到的來源，且禁止捏造引用；必要時可用 save_to_memory 保存可持續利用的結論。\n"
+        "禁止捏造引用。若輸入中出現嵌入的本機文件（[Embedded local documents — ...]），視為可選參考資料。"
+    )
+    system_parts = [system_intro]
+    if character_section:
+        system_parts.append(character_section)
+    system_parts.append(system_guidance)
+    system_message = "\n\n".join(system_parts)
+
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "你是一位研究助理，目標是協助使用者完成工作。\n"
-                "語言規則：\n"
-                "- 一律使用繁體中文回覆。\n"
-                "- 嚴禁使用任何簡體中文字。\n"
-                "- 即使使用者輸入英文或簡體中文，仍以繁體中文回覆。\n\n"
-                "可用工具：\n"
-                "- search_memory：持久化語意記憶，保存過往事實與筆記。若問題可能依賴既有脈絡，優先先查詢。\n"
-                "- save_to_memory：儲存可長期重用的重要資訊（使用者偏好、決策、關鍵發現）。僅保存有意義且可重用的內容。\n"
-                "- web_search：使用 DuckDuckGo 搜尋最新網路資訊。\n"
-                "- web_fetch：擷取並清理指定網址文字內容，可搭配 web_search 讀取候選結果。\n"
-                "- execute_shell_command：執行本機 Shell 指令（如 date、grep、tail、ls）以獲取系統時間、讀取日誌或抓取特定資料。\n"
-                "- ask_reasoning_model：將複雜、多步驟的分析或綜整委派給更強的推理模型，並明確附上問題與已蒐集脈絡。\n"
-                "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
-                "即時性規則：\n"
-                "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
-                "情境辨識與自然對話：\n"
-                "1. 辨別情境：根據使用者輸入自動判斷當下需求（例如日常閒聊、深入研究、系統操作、記憶檢索）。\n"
-                "2. 隱形工具調用：若需要搜尋、記憶或執行指令，直接在背後呼叫對應工具，不向使用者交代工具名稱或內部拆解步驟，將結果自然融入回覆。\n"
-                "3. 語氣自然：以流暢、口語化、具同理心的方式互動，避免過度機械化或生硬條列。\n"
-                "4. 彈性應變：簡單任務可直接回覆；複雜任務則在背後完成多步驟蒐集與推理，再提供精煉且有價值的答案。\n"
-                "5. 回覆內容：僅引用實際使用到的來源，且禁止捏造引用；必要時可用 save_to_memory 保存可持續利用的結論。\n"
-                "禁止捏造引用。若輸入中出現嵌入的本機文件（[Embedded local documents — ...]），視為可選參考資料。",
+                system_message,
             ),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
