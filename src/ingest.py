@@ -47,7 +47,13 @@ def _ingest_retry_base_seconds() -> float:
         return 2.0
 
 
-def ingest(data_dir: Path, chroma_dir: Path, chunk_size: int, chunk_overlap: int) -> int:
+def ingest(
+    data_dir: Path,
+    chroma_dir: Path,
+    chunk_size: int,
+    chunk_overlap: int,
+    rag_collection: str = "langchain",
+) -> int:
     api_key = _require_google_key()
     if not api_key:
         env_path = _project_root() / ".env"
@@ -95,11 +101,16 @@ def ingest(data_dir: Path, chroma_dir: Path, chunk_size: int, chunk_overlap: int
     base_delay = _ingest_retry_base_seconds()
     for attempt in range(1, attempts + 1):
         try:
-            Chroma.from_documents(
-                documents=splits,
-                embedding=embeddings,
+            store = Chroma(
                 persist_directory=str(chroma_dir),
+                embedding_function=embeddings,
+                collection_name=rag_collection,
             )
+            existing = store._collection.get(include=[])
+            existing_ids = existing.get("ids") or []
+            if existing_ids:
+                store._collection.delete(ids=existing_ids)
+            store.add_documents(splits)
             break
         except Exception as exc:
             if attempt >= attempts or not _is_rate_limit_error(exc):
@@ -142,6 +153,12 @@ def main() -> None:
     )
     parser.add_argument("--chunk-size", type=int, default=1000)
     parser.add_argument("--chunk-overlap", type=int, default=200)
+    parser.add_argument(
+        "--rag-collection",
+        type=str,
+        default="langchain",
+        help="Target Chroma collection name for RAG documents",
+    )
     args = parser.parse_args()
 
     sys.exit(
@@ -150,6 +167,7 @@ def main() -> None:
             chroma_dir=args.chroma_dir.resolve(),
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
+            rag_collection=args.rag_collection.strip() or "langchain",
         )
     )
 
