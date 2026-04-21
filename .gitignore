@@ -5,3 +5,6 @@ __pycache__
 *.pyc
 chroma_db/
 .cursor/debug*.log
+data/telemetry/user_feedback.jsonl
+data/telemetry/agent_events.jsonl
+chat_registry.json
