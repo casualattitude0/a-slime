@@ -57,6 +57,7 @@ export const useChatStore = defineStore('chat', () => {
   const streamingReply = ref<string>('')
   const isLoading = ref<boolean>(false)
   const pendingLLMError = ref<{ messageIndex: number; payload: LLMErrorPayload; originalText: string } | null>(null)
+  const persistedTurnTick = ref<number>(0)
 
   const versions = ref<VersionEntry[]>([])
   const activeVersionId = ref<string | null>(null)
@@ -171,6 +172,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       streamingBotIndex.value = -1
       streamingReply.value = ''
+      persistedTurnTick.value += 1
       return { done: true }
     }
 
@@ -723,6 +725,7 @@ export const useChatStore = defineStore('chat', () => {
     streamingReply,
     isLoading,
     pendingLLMError,
+    persistedTurnTick,
     streamingBotIndex,
     transport,
     versions,

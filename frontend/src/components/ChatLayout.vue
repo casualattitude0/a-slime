@@ -13,12 +13,27 @@ import { useChatMessageSplit } from '../composables/useChatMessageSplit'
 import type { Message } from '../stores/chatStore'
 
 const chatStore = useChatStore()
-const { messages, status, streamingReply, isLoading, activeVersionId, versions, pendingLLMError, streamingBotIndex, transport } = storeToRefs(chatStore)
+const {
+  messages,
+  status,
+  streamingReply,
+  isLoading,
+  activeVersionId,
+  versions,
+  pendingLLMError,
+  streamingBotIndex,
+  transport,
+  persistedTurnTick,
+} = storeToRefs(chatStore)
 
 const {
-  historyMessages,
+  historyTurns,
   activeMessages,
   activeStartIndex,
+  activeTurnIndex,
+  setActiveTurnByHistorySelection,
+  focusNewestTurn,
+  focusDraftTurn,
 } = useChatMessageSplit(messages)
 
 const activeAgentEntries = computed(() => {
@@ -41,6 +56,19 @@ const activeUserEntry = computed(() => {
     if (msg.role === 'user') return { msg, globalIdx: start + li }
   }
   return null as null | { msg: Message; globalIdx: number }
+})
+
+const historyTurnEntries = computed(() => {
+  return historyTurns.value.map((turn, idx) => {
+    const userLocalIndex = turn.messages.findIndex((m) => m.role === 'user')
+    const userMsg = userLocalIndex >= 0 ? turn.messages[userLocalIndex]!.text : ''
+    return {
+      ...turn,
+      title: userMsg || 'Untitled',
+      userLocalIndex,
+      isActive: idx === activeTurnIndex.value,
+    }
+  })
 })
 
 const showEmptyAgentBubble = computed(() => {
@@ -132,6 +160,16 @@ const hideBubbleUntilFlyIndex = ref<number | null>(null)
 
 watch(streamingBotIndex, (idx, prev) => {
   if (idx >= 0 && prev === -1) hideBubbleUntilFlyIndex.value = idx
+})
+
+watch(streamingBotIndex, (idx, prev) => {
+  if (idx >= 0 && prev === -1) {
+    focusNewestTurn()
+  }
+})
+
+watch(persistedTurnTick, () => {
+  focusDraftTurn()
 })
 
 useHeroToChatBubbleFly({
@@ -291,23 +329,39 @@ useHeroToChatBubbleFly({
           </div>
           <div v-show="historyRailOpen" ref="historyRailRef" class="history-rail-scroll">
             <div class="history-rail-inner">
-              <ChatMessage
-                v-for="(msg, i) in historyMessages"
-                :key="`h-${i}`"
-                class="history-rail-msg"
-                :role="msg.role"
-                :text="msg.text"
-                :message-ref="msg.messageRef"
-                :feedback-status="msg.feedbackStatus"
-                :feedback-rating="msg.feedbackRating"
-                :llm-error="msg.llmError"
-                :show-actions="pendingLLMError?.messageIndex === i"
-                :streaming="streamingBotIndex === i"
-                :await-fly-reveal="hideBubbleUntilFlyIndex === i"
-                @fix-issue="chatStore.fixIssue()"
-                @answer-immediately="chatStore.answerImmediately()"
-                @feedback="(rating) => handleFeedback(rating, msg.messageRef)"
-              />
+              <section
+                v-for="turn in historyTurnEntries"
+                :key="`turn-${turn.start}`"
+                class="history-rail-turn"
+                :class="{ 'history-rail-turn--active': turn.isActive }"
+              >
+                <ChatMessage
+                  v-for="(msg, i) in turn.messages"
+                  :key="`h-${turn.start}-${i}`"
+                  class="history-rail-msg"
+                  :role="msg.role"
+                  :text="msg.text"
+                  :message-ref="msg.messageRef"
+                  :feedback-status="msg.feedbackStatus"
+                  :feedback-rating="msg.feedbackRating"
+                  :llm-error="msg.llmError"
+                  :show-actions="pendingLLMError?.messageIndex === (turn.start + i)"
+                  :streaming="streamingBotIndex === (turn.start + i)"
+                  :await-fly-reveal="hideBubbleUntilFlyIndex === (turn.start + i)"
+                  @fix-issue="chatStore.fixIssue()"
+                  @answer-immediately="chatStore.answerImmediately()"
+                  @feedback="(rating) => handleFeedback(rating, msg.messageRef)"
+                />
+                <div v-if="turn.userLocalIndex >= 0" class="history-rail-turn-action">
+                  <button
+                    class="history-rail-switch-btn"
+                    type="button"
+                    @click="setActiveTurnByHistorySelection(turn.start)"
+                  >
+                    切換對話
+                  </button>
+                </div>
+              </section>
             </div>
           </div>
         </aside>
@@ -517,7 +571,7 @@ useHeroToChatBubbleFly({
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
+  justify-content: flex-end;
   align-items: stretch;
   min-height: 0;
 }
@@ -529,6 +583,8 @@ useHeroToChatBubbleFly({
   gap: 14px;
   flex-shrink: 0;
   width: 100%;
+  margin-top: auto;
+  padding-bottom: 8px;
 }
 
 .center-stage-block--agent {
@@ -740,6 +796,43 @@ useHeroToChatBubbleFly({
 
 .history-rail-inner {
   max-width: 100%;
+}
+
+.history-rail-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 6px;
+  margin-bottom: 8px;
+}
+
+.history-rail-turn--active {
+  border-color: rgba(0, 229, 255, 0.2);
+  background: rgba(0, 229, 255, 0.04);
+}
+
+.history-rail-turn-action {
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 4px;
+}
+
+.history-rail-switch-btn {
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  background: rgba(0, 229, 255, 0.06);
+  color: var(--accent);
+  font-size: 11px;
+  border-radius: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.history-rail-switch-btn:hover {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: rgba(0, 229, 255, 0.32);
 }
 
 .history-rail-msg :deep(.msg-row) {
