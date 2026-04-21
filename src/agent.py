@@ -49,6 +49,101 @@ def _prefetch_rag_into_input_enabled() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _prefetch_vague_gate_enabled() -> bool:
+    v = (os.environ.get("AGENT_RAG_PREFETCH_VAGUE_GATE") or "1").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _rag_prefetch_mode() -> str:
+    """RAG prefetch policy: 'intent' (default) or 'broad' (legacy behavior)."""
+    v = (os.environ.get("AGENT_RAG_PREFETCH_MODE") or "intent").strip().lower()
+    return "broad" if v == "broad" else "intent"
+
+
+_RETRIEVAL_INTENT_KEYWORDS = (
+    "@data",
+    "document",
+    "documents",
+    "doc",
+    "search",
+    "retrieve",
+    "rag",
+    "檔案",
+    "文件",
+    "資料",
+    "內文",
+    "內容",
+    "根據",
+    "查",
+    "搜尋",
+    "查詢",
+)
+
+_NON_VAGUE_QUESTION_HINTS = (
+    "怎麼",
+    "如何",
+    "為什麼",
+    "什麼",
+    "哪",
+    "幾",
+    "請",
+    "幫我",
+    "what",
+    "why",
+    "how",
+    "which",
+)
+
+_VAGUE_SHORT_RE = re.compile(
+    r"^(?:哇(?:塞)?|真的假的|嗯+|喔+|哦+|蛤+|哈+|是喔|原來如此|好吧|太多了|這麼多)+[!！?？~～。．…\s]*$",
+    re.IGNORECASE,
+)
+
+
+def _has_retrieval_intent(msg: str) -> bool:
+    low = msg.lower()
+    return any(k in low for k in _RETRIEVAL_INTENT_KEYWORDS)
+
+
+def _is_vague_short_utterance(msg: str) -> bool:
+    s = (msg or "").strip()
+    if not s:
+        return True
+    normalized = re.sub(r"\s+", "", s)
+    if len(normalized) > 14:
+        return False
+    if _has_retrieval_intent(s):
+        return False
+    if re.fullmatch(r"[!！?？~～,，。.、…\s]+", s):
+        return True
+    if _VAGUE_SHORT_RE.fullmatch(s):
+        return True
+    if any(h in s.lower() for h in _NON_VAGUE_QUESTION_HINTS):
+        return False
+    if re.search(r"[A-Za-z]{4,}", s):
+        return False
+    if any(ch.isdigit() for ch in s):
+        return False
+    if len(normalized) <= 3:
+        return True
+    return len(normalized) <= 8 and ("?" not in s and "？" not in s)
+
+
+def _should_prefetch_rag(user_input: str, chat_history: list[Any] | None = None) -> bool:
+    msg = (user_input or "").strip()
+    if not msg:
+        return False
+    if _has_retrieval_intent(msg):
+        return True
+    mode = _rag_prefetch_mode()
+    if mode == "broad":
+        if not _prefetch_vague_gate_enabled():
+            return True
+        _ = chat_history
+        return not _is_vague_short_utterance(msg)
+    return False
+
+
 def set_invocation_status_sink(sink: Callable[[dict[str, Any]], None] | None) -> None:
     _status_tls.sink = sink
 
@@ -451,6 +546,7 @@ class _PrefetchExecutor:
             and isinstance(base_input, str)
             and base_input.strip()
             and retriever is not None
+            and _should_prefetch_rag(base_input, payload.get("chat_history"))
         ):
             q = base_input.strip()
             _emit_status("reading", "調閱文件")
@@ -642,11 +738,12 @@ def build_executor(
                 "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
                 "即時性規則：\n"
                 "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
-                "工作流程：\n"
-                "若任務非常簡單（例如打招呼、瑣碎事實查詢、直接澄清），可直接回覆而不呼叫工具。否則先拆解任務並判斷是否需要子代理。\n"
-                "1. 區分任務：將使用者需求拆成有順序的子任務，並決定各子任務要使用的工具（search_memory、web_search、web_fetch、document_search、ask_reasoning_model）。\n"
-                "2. 任務執行：依序執行子任務；需要複雜推理或綜整時，將已蒐集脈絡交給 ask_reasoning_model。\n"
-                "3. 回覆：整合結果後精簡作答，僅引用實際使用到的來源；必要時用 save_to_memory 保存可持續利用的結論。\n"
+                "情境辨識與自然對話：\n"
+                "1. 辨別情境：根據使用者輸入自動判斷當下需求（例如日常閒聊、深入研究、系統操作、記憶檢索）。\n"
+                "2. 隱形工具調用：若需要搜尋、記憶或執行指令，直接在背後呼叫對應工具，不向使用者交代工具名稱或內部拆解步驟，將結果自然融入回覆。\n"
+                "3. 語氣自然：以流暢、口語化、具同理心的方式互動，避免過度機械化或生硬條列。\n"
+                "4. 彈性應變：簡單任務可直接回覆；複雜任務則在背後完成多步驟蒐集與推理，再提供精煉且有價值的答案。\n"
+                "5. 回覆內容：僅引用實際使用到的來源，且禁止捏造引用；必要時可用 save_to_memory 保存可持續利用的結論。\n"
                 "禁止捏造引用。若輸入中出現嵌入的本機文件（[Embedded local documents — ...]），視為可選參考資料。",
             ),
             ("placeholder", "{chat_history}"),
@@ -854,6 +951,7 @@ async def astream_executor(
         and retriever is not None
         and isinstance(run_payload.get("input"), str)
         and run_payload["input"].strip()
+        and _should_prefetch_rag(run_payload["input"], run_payload.get("chat_history"))
     ):
         q = run_payload["input"].strip()
         yield {"event": "status", "phase": "reading", "label": "調閱文件"}

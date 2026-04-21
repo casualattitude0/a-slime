@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from src.agent import (
     LLMErrorInfo,
+    _is_vague_short_utterance,
     astream_executor,
     build_executor,
     classify_llm_error,
@@ -233,6 +234,15 @@ def _requires_live_time_lookup(message: str) -> bool:
         "time now",
     )
     return any(k in msg for k in keywords)
+
+
+def _vague_short_clarify_reply(message: str) -> str | None:
+    msg = (message or "").strip()
+    if not msg:
+        return None
+    if _is_vague_short_utterance(msg):
+        return "我可能會誤解你的指涉內容。請補一句你是指哪個主題（例如：喝水建議、專案文件、或上一句回覆）。"
+    return None
 
 
 # ─── Request / Response models ────────────────────────────────────────────────
@@ -494,6 +504,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
             local_reply = agent_mode_reply(msg, hist)
         else:
             local_reply = _simple_local_reply(msg)
+            if local_reply is None:
+                local_reply = _vague_short_clarify_reply(msg)
             if local_reply is None and not _requires_live_time_lookup(msg):
                 local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
         used_local_reply = local_reply is not None
@@ -626,6 +638,8 @@ async def _resolve_session(
             local_reply = agent_mode_reply(msg, hist)
         else:
             local_reply = _simple_local_reply(msg)
+            if local_reply is None:
+                local_reply = _vague_short_clarify_reply(msg)
             if local_reply is None and not _requires_live_time_lookup(msg):
                 local_reply = await asyncio.to_thread(local_quick_reply, msg, hist)
 
