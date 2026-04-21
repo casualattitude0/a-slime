@@ -148,10 +148,18 @@ export const useChatStore = defineStore('chat', () => {
         if (llmErr?.is_llm_error) {
           pendingLLMError.value = { messageIndex: idx, payload: llmErr, originalText }
         }
-      } else if (obj.reply) {
+      } else {
+        let replyText: string
+        if (obj.reply != null && String(obj.reply).length > 0) {
+          replyText = String(obj.reply)
+        } else if (streamingBotIndex.value >= 0) {
+          replyText = messages.value[streamingBotIndex.value]!.text
+        } else {
+          replyText = obj.reply != null ? String(obj.reply) : ''
+        }
         const finalized = {
           role: 'bot' as const,
-          text: obj.reply,
+          text: replyText,
           messageRef: obj.message_ref || undefined,
           feedbackStatus: 'idle' as const,
         }
@@ -160,8 +168,6 @@ export const useChatStore = defineStore('chat', () => {
         } else {
           messages.value.push(finalized)
         }
-      } else if (streamingBotIndex.value >= 0) {
-        messages.value.splice(streamingBotIndex.value, 1)
       }
       streamingBotIndex.value = -1
       streamingReply.value = ''

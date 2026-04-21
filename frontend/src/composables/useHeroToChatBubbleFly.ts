@@ -39,75 +39,79 @@ export function useHeroToChatBubbleFly(opts: {
           return
         }
 
-        const sr = avatar.getBoundingClientRect()
-        const er = target.getBoundingClientRect()
-        const scx = sr.left + sr.width / 2
-        const scy = sr.top + sr.height / 2 - holdAboveAvatarPx
-        const ecx = er.left + er.width / 2
-        const ecy = er.top + er.height / 2
-        const ox = scx - ecx
-        const oy = scy - ecy
+        try {
+          const sr = avatar.getBoundingClientRect()
+          const er = target.getBoundingClientRect()
+          const scx = sr.left + sr.width / 2
+          const scy = sr.top + sr.height / 2 - holdAboveAvatarPx
+          const ecx = er.left + er.width / 2
+          const ecy = er.top + er.height / 2
+          const ox = scx - ecx
+          const oy = scy - ecy
 
-        const fly = document.createElement('div')
-        fly.className = 'bubble-fly-clone'
-        fly.textContent = opts.streamingReply.value.length ? opts.streamingReply.value : '…'
-        fly.setAttribute('aria-hidden', 'true')
-        document.body.appendChild(fly)
+          const fly = document.createElement('div')
+          fly.className = 'bubble-fly-clone'
+          fly.textContent = opts.streamingReply.value.length ? opts.streamingReply.value : '…'
+          fly.setAttribute('aria-hidden', 'true')
+          document.body.appendChild(fly)
 
-        const fx = ecx
-        const fy = ecy
-        fly.style.left = `${fx}px`
-        fly.style.top = `${fy}px`
-        fly.style.transition = 'none'
-        fly.style.transform = `translate(-50%, -50%) translate(${ox}px, ${oy}px) scale(0.82)`
-        fly.style.opacity = '0.92'
+          const fx = ecx
+          const fy = ecy
+          fly.style.left = `${fx}px`
+          fly.style.top = `${fy}px`
+          fly.style.transition = 'none'
+          fly.style.transform = `translate(-50%, -50%) translate(${ox}px, ${oy}px) scale(0.82)`
+          fly.style.opacity = '0.92'
 
-        let cleaned = false
-        const stopTextWatch = watch(
-          () => opts.streamingReply.value,
-          (t) => {
-            if (cleaned || !fly.parentNode) return
-            fly.textContent = t.length ? t : '…'
-          },
-          { flush: 'sync' },
-        )
-
-        const cleanup = () => {
-          if (cleaned) return
-          cleaned = true
-          stopTextWatch()
-          fly.remove()
-        }
-
-        const flyDurationMs = 580
-
-        let flySettled = false
-        const finishFly = () => {
-          if (flySettled) return
-          flySettled = true
-          cleanup()
-          arrive()
-        }
-
-        window.setTimeout(() => {
-          fly.style.transition =
-            `transform ${flyDurationMs / 1000}s cubic-bezier(0.22, 1, 0.36, 1), opacity ${flyDurationMs / 1000}s cubic-bezier(0.22, 1, 0.36, 1)`
-          requestAnimationFrame(() => {
-            fly.style.transform = 'translate(-50%, -50%) translate(0px, 0px) scale(1)'
-            fly.style.opacity = '1'
-          })
-
-          fly.addEventListener(
-            'transitionend',
-            (e) => {
-              if (e.propertyName !== 'transform') return
-              finishFly()
+          let cleaned = false
+          const stopTextWatch = watch(
+            () => opts.streamingReply.value,
+            (t) => {
+              if (cleaned || !fly.parentNode) return
+              fly.textContent = t.length ? t : '…'
             },
-            { once: true },
+            { flush: 'sync' },
           )
 
-          window.setTimeout(finishFly, flyDurationMs + 420)
-        }, holdMs)
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            stopTextWatch()
+            fly.remove()
+          }
+
+          const flyDurationMs = 580
+
+          let flySettled = false
+          const finishFly = () => {
+            if (flySettled) return
+            flySettled = true
+            cleanup()
+            arrive()
+          }
+
+          window.setTimeout(() => {
+            // Animate transform only — two properties would fire multiple transitionend + { once: true } can swallow the wrong one.
+            fly.style.transition = `transform ${flyDurationMs / 1000}s cubic-bezier(0.22, 1, 0.36, 1)`
+            requestAnimationFrame(() => {
+              fly.style.transform = 'translate(-50%, -50%) translate(0px, 0px) scale(1)'
+              fly.style.opacity = '1'
+            })
+
+            fly.addEventListener(
+              'transitionend',
+              (e) => {
+                if (e.propertyName !== 'transform') return
+                finishFly()
+              },
+              { once: true },
+            )
+
+            window.setTimeout(finishFly, flyDurationMs + 420)
+          }, holdMs)
+        } catch {
+          arrive()
+        }
       })
     },
   )

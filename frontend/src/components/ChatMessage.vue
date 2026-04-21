@@ -16,6 +16,10 @@ const props = defineProps<{
   streaming?: boolean
   /** Hide transcript bubble until fly animation lands (streaming bot only) */
   awaitFlyReveal?: boolean
+  /** Omit the small user avatar (center stage layout) */
+  hideUserAvatar?: boolean
+  /** Omit the YOU / AGENT / … label row */
+  hideRoleLabel?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -71,7 +75,7 @@ const roleLabel = computed(() => {
 
     <!-- Bubble -->
     <div class="msg-bubble">
-      <div class="msg-label">{{ roleLabel }}</div>
+      <div v-if="!hideRoleLabel" class="msg-label">{{ roleLabel }}</div>
 
       <div
         v-if="role === 'bot'"
@@ -110,7 +114,7 @@ const roleLabel = computed(() => {
     </div>
 
     <!-- Avatar (user right side) -->
-    <div v-if="role === 'user'" class="msg-avatar msg-avatar--user">
+    <div v-if="role === 'user' && !hideUserAvatar" class="msg-avatar msg-avatar--user">
       <User :size="14" />
     </div>
   </div>

@@ -9,14 +9,51 @@ import MemoryPanel from './MemoryPanel.vue'
 import ConversationSidebar from './ConversationSidebar.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 import { useHeroToChatBubbleFly } from '../composables/useHeroToChatBubbleFly'
+import { useChatMessageSplit } from '../composables/useChatMessageSplit'
+import type { Message } from '../stores/chatStore'
 
 const chatStore = useChatStore()
 const { messages, status, streamingReply, isLoading, activeVersionId, versions, pendingLLMError, streamingBotIndex, transport } = storeToRefs(chatStore)
+
+const {
+  historyMessages,
+  activeMessages,
+  activeStartIndex,
+} = useChatMessageSplit(messages)
+
+const activeAgentEntries = computed(() => {
+  const start = activeStartIndex.value
+  const active = activeMessages.value
+  const out: { msg: Message; globalIdx: number }[] = []
+  active.forEach((msg, li) => {
+    if (msg.role !== 'user') {
+      out.push({ msg, globalIdx: start + li })
+    }
+  })
+  return out
+})
+
+const activeUserEntry = computed(() => {
+  const start = activeStartIndex.value
+  const active = activeMessages.value
+  for (let li = active.length - 1; li >= 0; li--) {
+    const msg = active[li]!
+    if (msg.role === 'user') return { msg, globalIdx: start + li }
+  }
+  return null as null | { msg: Message; globalIdx: number }
+})
+
+const showEmptyAgentBubble = computed(() => {
+  if (activeAgentEntries.value.length > 0) return false
+  if (streamingBotIndex.value >= 0) return false
+  return activeMessages.value.some((m) => m.role === 'user')
+})
 
 const toggleTransport = () => {
   transport.value = transport.value === 'ws' ? 'sse' : 'ws'
 }
 const logRef = ref<HTMLElement | null>(null)
+const historyRailRef = ref<HTMLElement | null>(null)
 const heroAvatarRef = ref<HTMLImageElement | null>(null)
 const showPanel = ref(false)
 const sidebarOpen = ref(localStorage.getItem('agent_sidebar_open') !== '0')
@@ -27,21 +64,22 @@ function toggleSidebar() {
   localStorage.setItem('agent_sidebar_open', sidebarOpen.value ? '1' : '0')
 }
 
-const scrollToBottom = async () => {
+const scrollHistoryRailToBottom = async () => {
   await nextTick()
-  if (logRef.value) {
-    logRef.value.scrollTop = logRef.value.scrollHeight
+  const el = historyRailRef.value
+  if (el) {
+    el.scrollTop = el.scrollHeight
   }
 }
 
 watch(
   () => messages.value,
-  () => { scrollToBottom() },
+  () => { scrollHistoryRailToBottom() },
   { deep: true }
 )
 
 onMounted(async () => {
-  scrollToBottom()
+  scrollHistoryRailToBottom()
   await Promise.all([chatStore.fetchVersions(), chatStore.fetchChats()])
   // Restore last active chat on first load
   const { activeChatId } = storeToRefs(chatStore)
@@ -71,6 +109,11 @@ const handleFeedback = async (rating: number, messageRef?: string) => {
   if (!sid || !messageRef) return
   const comment = prompt('Optional feedback comment:') ?? ''
   await chatStore.submitFeedback({ sessionId: sid, messageRef, rating, comment })
+}
+
+function handleFeedbackForActiveUser(rating: number) {
+  const e = activeUserEntry.value
+  if (e) handleFeedback(rating, e.msg.messageRef)
 }
 
 const activeVersionName = () => {
@@ -154,29 +197,89 @@ useHeroToChatBubbleFly({
         <ConversationSidebar v-if="sidebarOpen" />
       </Transition>
 
-      <!-- Message Canvas -->
-      <main class="chat-canvas">
-        <!-- Scrollable messages area -->
-        <div ref="logRef" class="messages-scroll">
-          <div class="messages-inner">
+      <!-- Center stage + history rail -->
+      <main ref="logRef" class="chat-canvas">
+        <div class="center-stage">
+          <div class="center-stage-inner">
+            <div class="center-stage-hero-cluster">
+            <div class="center-stage-block center-stage-block--agent">
+            <div v-if="showEmptyAgentBubble" class="agent-bubble-placeholder" aria-hidden="true" />
+
             <ChatMessage
-              v-for="(msg, i) in messages"
-              :key="i"
-              :role="msg.role"
-              :text="msg.text"
-              :message-ref="msg.messageRef"
-              :feedback-status="msg.feedbackStatus"
-              :feedback-rating="msg.feedbackRating"
-              :llm-error="msg.llmError"
-              :show-actions="pendingLLMError?.messageIndex === i"
-              :streaming="streamingBotIndex === i"
-              :await-fly-reveal="hideBubbleUntilFlyIndex === i"
+              v-for="entry in activeAgentEntries"
+              :key="`a-${entry.globalIdx}`"
+              class="center-stage-msg"
+              hide-role-label
+              :role="entry.msg.role"
+              :text="entry.msg.text"
+              :message-ref="entry.msg.messageRef"
+              :feedback-status="entry.msg.feedbackStatus"
+              :feedback-rating="entry.msg.feedbackRating"
+              :llm-error="entry.msg.llmError"
+              :show-actions="pendingLLMError?.messageIndex === entry.globalIdx"
+              :streaming="streamingBotIndex === entry.globalIdx"
+              :await-fly-reveal="hideBubbleUntilFlyIndex === entry.globalIdx"
               @fix-issue="chatStore.fixIssue()"
               @answer-immediately="chatStore.answerImmediately()"
-              @feedback="(rating) => handleFeedback(rating, msg.messageRef)"
+              @feedback="(rating) => handleFeedback(rating, entry.msg.messageRef)"
             />
+            </div>
+
+            <div class="hero-banner hero-banner--stage">
+              <div v-if="isLoading && streamingBotIndex === -1" class="hero-thinking-bubble">{{ heroThinkingText }}</div>
+              <div class="hero-activity">
+                <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
+              </div>
+              <img ref="heroAvatarRef" :src="aiSlimeAvatar" alt="" class="hero-avatar" aria-hidden="true" />
+            </div>
+
+            <div v-if="activeUserEntry" class="center-stage-block center-stage-block--user">
+            <ChatMessage
+              :key="`u-${activeUserEntry.globalIdx}`"
+              class="center-stage-msg center-stage-msg--user"
+              :role="activeUserEntry.msg.role"
+              :text="activeUserEntry.msg.text"
+              hide-user-avatar
+              :message-ref="activeUserEntry.msg.messageRef"
+              :feedback-status="activeUserEntry.msg.feedbackStatus"
+              :feedback-rating="activeUserEntry.msg.feedbackRating"
+              :llm-error="activeUserEntry.msg.llmError"
+              :show-actions="pendingLLMError?.messageIndex === activeUserEntry.globalIdx"
+              :streaming="streamingBotIndex === activeUserEntry.globalIdx"
+              :await-fly-reveal="hideBubbleUntilFlyIndex === activeUserEntry.globalIdx"
+              @fix-issue="chatStore.fixIssue()"
+              @answer-immediately="chatStore.answerImmediately()"
+              @feedback="handleFeedbackForActiveUser"
+            />
+            </div>
+            </div>
           </div>
         </div>
+
+        <aside class="history-rail" aria-label="Earlier messages">
+          <div class="history-rail-header">History</div>
+          <div ref="historyRailRef" class="history-rail-scroll">
+            <div class="history-rail-inner">
+              <ChatMessage
+                v-for="(msg, i) in historyMessages"
+                :key="`h-${i}`"
+                class="history-rail-msg"
+                :role="msg.role"
+                :text="msg.text"
+                :message-ref="msg.messageRef"
+                :feedback-status="msg.feedbackStatus"
+                :feedback-rating="msg.feedbackRating"
+                :llm-error="msg.llmError"
+                :show-actions="pendingLLMError?.messageIndex === i"
+                :streaming="streamingBotIndex === i"
+                :await-fly-reveal="hideBubbleUntilFlyIndex === i"
+                @fix-issue="chatStore.fixIssue()"
+                @answer-immediately="chatStore.answerImmediately()"
+                @feedback="(rating) => handleFeedback(rating, msg.messageRef)"
+              />
+            </div>
+          </div>
+        </aside>
       </main>
 
     </div>
@@ -191,16 +294,6 @@ useHeroToChatBubbleFly({
     <!-- Composer Footer -->
     <footer class="composer-footer">
       <div class="composer-inner">
-        <!-- Hero banner -->
-        <div class="hero-banner">
-          <div v-if="isLoading && streamingBotIndex === -1" class="hero-thinking-bubble">{{ heroThinkingText }}</div>
-          <div class="hero-activity">
-            <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
-          </div>
-          <img ref="heroAvatarRef" :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
-        </div>
-
-        <!-- Status strip -->
         <div class="status-strip" :class="(status || isLoading) ? '' : 'status-strip--hidden'">
           <Loader2 :size="11" class="spin-icon" />
           <span>{{ status || 'AI 思考中' }}</span>
@@ -365,29 +458,202 @@ useHeroToChatBubbleFly({
   overflow: hidden;
 }
 
-/* ── Chat canvas ─────────────────────────────────────── */
+/* ── Chat canvas (center + history rail) ─────────────── */
 .chat-canvas {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   min-height: 0;
   overflow: hidden;
 }
 
-/* ── Messages scroll ─────────────────────────────────── */
-.messages-scroll {
+.center-stage {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 20px 12px;
   scroll-behavior: smooth;
+  display: flex;
+  flex-direction: column;
 }
 
-.messages-inner {
+.center-stage-inner {
   max-width: 760px;
-  margin: 0 auto;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  min-height: 0;
 }
 
-/* ── Hero banner (always visible) ───────────────────── */
+.center-stage-hero-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.center-stage-block--agent {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.center-stage-block--user {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.agent-bubble-placeholder {
+  width: 100%;
+  max-width: min(560px, 100%);
+  min-height: 72px;
+  border-radius: 12px;
+  border: 1px dashed rgba(160, 100, 255, 0.38);
+  background: rgba(140, 80, 255, 0.06);
+}
+
+.center-stage-msg {
+  width: 100%;
+}
+
+.center-stage-msg:not(.center-stage-msg--user) {
+  max-width: min(560px, 100%);
+}
+
+:deep(.center-stage-msg.msg-row--bot),
+:deep(.center-stage-msg.msg-row--err),
+:deep(.center-stage-msg.msg-row--thought) {
+  justify-content: center;
+}
+
+:deep(.center-stage-msg.msg-row--bot .msg-bubble),
+:deep(.center-stage-msg.msg-row--err .msg-bubble),
+:deep(.center-stage-msg.msg-row--thought .msg-bubble) {
+  max-width: 100%;
+}
+
+:deep(.center-stage-msg.msg-row--bot .bubble-bot),
+:deep(.center-stage-msg.msg-row--err .bubble-err),
+:deep(.center-stage-msg.msg-row--thought .bubble-thought) {
+  text-align: left;
+}
+
+.center-stage-inner .center-stage-msg :deep(.msg-row) {
+  margin-bottom: 0;
+}
+
+/* center-stage-msg lives on the same node as msg-row--bot (child root), not an ancestor */
+:deep(.center-stage-msg.msg-row--bot > .msg-avatar),
+:deep(.center-stage-msg.msg-row--err > .msg-avatar),
+:deep(.center-stage-msg.msg-row--thought > .msg-avatar) {
+  display: none;
+}
+
+.center-stage-msg--user {
+  width: auto;
+  max-width: min(560px, 100%);
+}
+
+.center-stage-msg--user :deep(.msg-row--user) {
+  width: auto;
+  max-width: 100%;
+  justify-content: center;
+}
+
+.center-stage-msg--user :deep(.msg-bubble) {
+  max-width: 100%;
+  align-items: center;
+}
+
+.center-stage-msg--user :deep(.msg-label) {
+  width: 100%;
+  text-align: center;
+  padding-right: 0;
+  box-sizing: border-box;
+}
+
+.center-stage-msg--user :deep(.bubble-user) {
+  text-align: left;
+}
+
+/* ── History rail ────────────────────────────────────── */
+.history-rail {
+  width: min(300px, 32vw);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: rgba(10, 11, 15, 0.62);
+}
+
+.history-rail-header {
+  flex-shrink: 0;
+  padding: 10px 12px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: ui-monospace, monospace;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding: 10px 10px 16px;
+}
+
+.history-rail-inner {
+  max-width: 100%;
+}
+
+.history-rail-msg :deep(.msg-row) {
+  margin-bottom: 14px;
+}
+
+.history-rail-msg :deep(.msg-bubble) {
+  max-width: 100%;
+}
+
+.history-rail-msg :deep(.bubble-bot) {
+  font-size: 12.5px;
+  padding: 10px 12px;
+}
+
+.history-rail-msg :deep(.bubble-user) {
+  font-size: 13px;
+  padding: 8px 11px;
+}
+
+@media (max-width: 900px) {
+  .chat-canvas {
+    flex-direction: column;
+  }
+
+  .history-rail {
+    width: 100%;
+    max-height: min(240px, 34vh);
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* ── Hero banner (center stage — fly animation avatar ref) ─ */
 .hero-banner {
   flex-shrink: 0;
   display: flex;
@@ -396,9 +662,15 @@ useHeroToChatBubbleFly({
   padding: 10px 20px 8px;
   gap: 0;
   user-select: none;
-  border-top: 1px solid var(--border);
-  margin-bottom: 8px;
   background: transparent;
+}
+
+.hero-banner--stage {
+  margin: 0;
+  padding: 8px 12px 6px;
+  align-self: center;
+  width: 100%;
+  max-width: min(560px, 100%);
 }
 
 .hero-activity {
