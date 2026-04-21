@@ -393,7 +393,7 @@ onMounted(async () => {
 .tab-btn--active {
   color: var(--accent);
   border-bottom-color: var(--accent);
-  background: rgba(0, 229, 255, 0.04);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 /* ── Tab content ─────────────────────────────────────── */
@@ -428,8 +428,8 @@ onMounted(async () => {
 }
 
 .ver-card--active {
-  border-color: rgba(0, 229, 255, 0.28);
-  background: rgba(0, 229, 255, 0.04);
+  border-color: rgba(var(--accent-rgb), 0.38);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 .ver-card-body {
@@ -519,7 +519,7 @@ onMounted(async () => {
 }
 
 .panel-input:focus {
-  border-color: rgba(0, 229, 255, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.5);
 }
 
 /* ── Add version button ──────────────────────────────── */
@@ -617,7 +617,7 @@ onMounted(async () => {
 }
 
 .meta-tag {
-  color: rgba(0, 229, 255, 0.5);
+  color: rgba(var(--accent-rgb), 0.78);
   font-family: ui-monospace, monospace;
 }
 
@@ -658,8 +658,8 @@ onMounted(async () => {
 
 .danger-btn:hover {
   color: var(--error);
-  border-color: rgba(255, 77, 106, 0.25);
-  background: rgba(255, 77, 106, 0.05);
+  border-color: rgba(var(--error-rgb), 0.4);
+  background: rgba(var(--error-rgb), 0.12);
 }
 
 .danger-btn:disabled {
@@ -695,14 +695,14 @@ onMounted(async () => {
 
 .icon-btn--accent:hover {
   color: var(--accent);
-  border-color: rgba(0, 229, 255, 0.2);
-  background: rgba(0, 229, 255, 0.06);
+  border-color: rgba(var(--accent-rgb), 0.34);
+  background: rgba(var(--accent-rgb), 0.14);
 }
 
 .icon-btn--danger:hover {
   color: var(--error);
-  border-color: rgba(255, 77, 106, 0.2);
-  background: rgba(255, 77, 106, 0.06);
+  border-color: rgba(var(--error-rgb), 0.34);
+  background: rgba(var(--error-rgb), 0.14);
 }
 
 /* ── Text buttons ────────────────────────────────────── */
@@ -719,7 +719,7 @@ onMounted(async () => {
 
 .text-btn--danger:hover {
   color: var(--error);
-  border-color: rgba(255, 77, 106, 0.25);
+  border-color: rgba(var(--error-rgb), 0.4);
 }
 
 .text-btn:disabled {

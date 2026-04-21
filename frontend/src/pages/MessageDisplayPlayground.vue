@@ -137,7 +137,7 @@ const llmErr: LLMErrorPayload = {
   font-size: 12px;
   color: var(--text-dim);
   text-decoration: none;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.2);
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.3);
 }
 
 .play-link:hover {
@@ -214,6 +214,6 @@ const llmErr: LLMErrorPayload = {
 
 .play-textarea:focus {
   outline: none;
-  border-color: rgba(0, 229, 255, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.5);
 }
 </style>

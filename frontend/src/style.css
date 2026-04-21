@@ -1,34 +1,37 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #0a0b0f;
-  --color-surface: #111318;
-  --color-surface-2: #181b22;
-  --color-surface-3: #1e2229;
-  --color-accent: #00e5ff;
-  --color-secondary: #8b5cf6;
-  --color-error: #ff4d6a;
-  --color-success: #00ffa3;
-  --color-muted: #6b7280;
+  --color-bg: #0d1117;
+  --color-surface: #131a23;
+  --color-surface-2: #1a2330;
+  --color-surface-3: #202b3a;
+  --color-accent: #4f9cff;
+  --color-secondary: #9b7bff;
+  --color-error: #ff5e7e;
+  --color-success: #35d399;
+  --color-muted: #8a96ab;
 }
 
 :root {
-  --bg: #0a0b0f;
-  --surface: #111318;
-  --surface-2: #181b22;
-  --surface-3: #1e2229;
-  --border: rgba(255, 255, 255, 0.06);
-  --border-bright: rgba(255, 255, 255, 0.11);
-  --text: #e2e4ea;
-  --text-dim: #6b7280;
-  --accent: #00e5ff;
-  --accent-soft: rgba(0, 229, 255, 0.09);
-  --accent-glow: rgba(0, 229, 255, 0.28);
-  --secondary: #8b5cf6;
-  --secondary-soft: rgba(139, 92, 246, 0.1);
-  --error: #ff4d6a;
-  --error-soft: rgba(255, 77, 106, 0.09);
-  --success: #00ffa3;
+  --bg: #0d1117;
+  --surface: #131a23;
+  --surface-2: #1a2330;
+  --surface-3: #202b3a;
+  --border: rgba(157, 184, 222, 0.14);
+  --border-bright: rgba(157, 184, 222, 0.24);
+  --text: #e7edf8;
+  --text-dim: #8a96ab;
+  --accent: #4f9cff;
+  --accent-rgb: 79, 156, 255;
+  --accent-soft: rgba(var(--accent-rgb), 0.13);
+  --accent-glow: rgba(var(--accent-rgb), 0.34);
+  --secondary: #9b7bff;
+  --secondary-rgb: 155, 123, 255;
+  --secondary-soft: rgba(var(--secondary-rgb), 0.14);
+  --error: #ff5e7e;
+  --error-rgb: 255, 94, 126;
+  --error-soft: rgba(var(--error-rgb), 0.12);
+  --success: #35d399;
 }
 
 *,
@@ -43,8 +46,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
   background: var(--bg);
   background-image:
-    radial-gradient(ellipse 90% 55% at 50% -10%, rgba(0, 229, 255, 0.035) 0%, transparent 65%),
-    radial-gradient(ellipse 55% 45% at 85% 85%, rgba(139, 92, 246, 0.025) 0%, transparent 60%);
+    radial-gradient(ellipse 90% 55% at 50% -10%, rgba(var(--accent-rgb), 0.06) 0%, transparent 65%),
+    radial-gradient(ellipse 55% 45% at 85% 85%, rgba(var(--secondary-rgb), 0.05) 0%, transparent 60%);
   background-attachment: fixed;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -63,5 +66,5 @@ body {
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 229, 255, 0.25);
+  background: rgba(var(--accent-rgb), 0.4);
 }

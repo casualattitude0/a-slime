@@ -214,7 +214,7 @@ function handleClear() {
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(0, 229, 255, 0.15) 30%, rgba(0, 229, 255, 0.15) 70%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(var(--accent-rgb), 0.24) 30%, rgba(var(--accent-rgb), 0.24) 70%, transparent 100%);
 }
 
 .agent-name {
@@ -229,18 +229,18 @@ function handleClear() {
   font-size: 10px;
   padding: 2px 8px;
   border-radius: 20px;
-  border: 1px solid rgba(0, 229, 255, 0.18);
-  color: rgba(0, 229, 255, 0.55);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  color: rgba(var(--accent-rgb), 0.82);
   font-family: ui-monospace, monospace;
   letter-spacing: 0.04em;
-  background: rgba(0, 229, 255, 0.04);
+  background: rgba(var(--accent-rgb), 0.14);
 }
 
 .status-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: rgba(0, 229, 255, 0.35);
+  background: rgba(var(--accent-rgb), 0.52);
   transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 
@@ -284,7 +284,7 @@ function handleClear() {
 .cmd-btn--danger:hover {
   color: var(--error);
   background: var(--error-soft);
-  border-color: rgba(255, 77, 106, 0.22);
+  border-color: rgba(var(--error-rgb), 0.34);
 }
 
 .cmd-link {
@@ -338,7 +338,7 @@ function handleClear() {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(0, 229, 255, 0.35);
+  background: rgba(var(--accent-rgb), 0.52);
   flex-shrink: 0;
   transition: background 0.3s ease, box-shadow 0.3s ease;
 }
@@ -366,9 +366,9 @@ function handleClear() {
   margin-bottom: 8px;
   padding: 6px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(160, 100, 255, 0.3);
-  background: rgba(140, 80, 255, 0.08);
-  color: rgba(206, 180, 255, 0.95);
+  border: 1px solid rgba(var(--secondary-rgb), 0.4);
+  background: rgba(var(--secondary-rgb), 0.16);
+  color: rgba(223, 212, 255, 0.95);
   font-size: 12px;
   font-family: ui-monospace, monospace;
   line-height: 1.2;
@@ -429,9 +429,9 @@ function handleClear() {
   overflow-y: auto;
   padding: 10px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(160, 100, 255, 0.38);
-  background: rgba(140, 80, 255, 0.14);
-  color: rgba(206, 180, 255, 0.96);
+  border: 1px solid rgba(var(--secondary-rgb), 0.5);
+  background: rgba(var(--secondary-rgb), 0.2);
+  color: rgba(223, 212, 255, 0.96);
   font-size: 12px;
   font-family: ui-monospace, monospace;
   line-height: 1.35;
@@ -439,7 +439,7 @@ function handleClear() {
   word-break: break-word;
   box-shadow:
     0 4px 18px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(0, 229, 255, 0.06) inset;
+    0 0 0 1px rgba(var(--accent-rgb), 0.14) inset;
   pointer-events: none;
   opacity: 0.9;
   will-change: transform;

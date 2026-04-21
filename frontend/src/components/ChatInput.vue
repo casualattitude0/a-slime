@@ -105,10 +105,10 @@ onMounted(() => {
 }
 
 .composer:focus-within {
-  border-color: rgba(0, 229, 255, 0.38);
+  border-color: rgba(var(--accent-rgb), 0.5);
   box-shadow:
-    0 0 0 1px rgba(0, 229, 255, 0.1),
-    0 0 24px rgba(0, 229, 255, 0.07);
+    0 0 0 1px rgba(var(--accent-rgb), 0.2),
+    0 0 24px rgba(var(--accent-rgb), 0.18);
 }
 
 .composer--disabled {
@@ -202,7 +202,7 @@ onMounted(() => {
 
 .send-btn--terminate {
   background: var(--error-soft);
-  border-color: rgba(255, 77, 106, 0.3);
+  border-color: rgba(var(--error-rgb), 0.42);
   color: var(--error);
 }
 </style>

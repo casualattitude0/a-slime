@@ -407,7 +407,7 @@ useHeroToChatBubbleFly({
   padding: 0 20px;
   height: 44px;
   flex-shrink: 0;
-  background: rgba(17, 19, 24, 0.92);
+  background: rgba(19, 26, 35, 0.92);
   backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   position: relative;
@@ -421,7 +421,7 @@ useHeroToChatBubbleFly({
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(0, 229, 255, 0.15) 30%, rgba(0, 229, 255, 0.15) 70%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(var(--accent-rgb), 0.24) 30%, rgba(var(--accent-rgb), 0.24) 70%, transparent 100%);
 }
 
 .agent-name {
@@ -436,11 +436,11 @@ useHeroToChatBubbleFly({
   font-size: 10px;
   padding: 2px 8px;
   border-radius: 20px;
-  border: 1px solid rgba(0, 229, 255, 0.18);
-  color: rgba(0, 229, 255, 0.55);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  color: rgba(var(--accent-rgb), 0.82);
   font-family: ui-monospace, monospace;
   letter-spacing: 0.04em;
-  background: rgba(0, 229, 255, 0.04);
+  background: rgba(var(--accent-rgb), 0.14);
 }
 
 /* status dot */
@@ -448,7 +448,7 @@ useHeroToChatBubbleFly({
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: rgba(0, 229, 255, 0.35);
+  background: rgba(var(--accent-rgb), 0.52);
   transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 
@@ -498,13 +498,13 @@ useHeroToChatBubbleFly({
 .cmd-btn--active {
   color: var(--accent);
   background: var(--accent-soft);
-  border-color: rgba(0, 229, 255, 0.22);
+  border-color: rgba(var(--accent-rgb), 0.34);
 }
 
 .cmd-btn--danger:hover {
   color: var(--error);
   background: var(--error-soft);
-  border-color: rgba(255, 77, 106, 0.22);
+  border-color: rgba(var(--error-rgb), 0.34);
 }
 
 .cmd-btn:disabled {
@@ -532,7 +532,7 @@ useHeroToChatBubbleFly({
 }
 
 .transport-dot--sse {
-  background: rgba(255, 200, 100, 0.7);
+  background: rgba(255, 199, 93, 0.8);
 }
 
 /* ── Body ────────────────────────────────────────────── */
@@ -606,8 +606,8 @@ useHeroToChatBubbleFly({
   max-width: min(560px, 100%);
   min-height: 72px;
   border-radius: 12px;
-  border: 1px dashed rgba(160, 100, 255, 0.38);
-  background: rgba(140, 80, 255, 0.06);
+  border: 1px dashed rgba(var(--secondary-rgb), 0.5);
+  background: rgba(var(--secondary-rgb), 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -617,8 +617,8 @@ useHeroToChatBubbleFly({
 
 .agent-bubble-placeholder--thinking {
   border-style: solid;
-  border-color: rgba(160, 100, 255, 0.3);
-  background: rgba(140, 80, 255, 0.08);
+  border-color: rgba(var(--secondary-rgb), 0.45);
+  background: rgba(var(--secondary-rgb), 0.16);
   animation: hero-think-pulse 1s ease-in-out infinite;
 }
 
@@ -626,7 +626,7 @@ useHeroToChatBubbleFly({
   font-size: 12px;
   font-family: ui-monospace, monospace;
   line-height: 1.35;
-  color: rgba(206, 180, 255, 0.95);
+  color: rgba(223, 212, 255, 0.95);
   text-align: center;
   word-break: break-word;
 }
@@ -748,28 +748,28 @@ useHeroToChatBubbleFly({
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 229, 255, 0.28);
-  background: rgba(0, 229, 255, 0.08);
-  color: rgba(180, 244, 255, 0.92);
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.14);
+  color: rgba(207, 227, 255, 0.96);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
   padding: 0;
-  box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.1) inset;
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.2) inset;
   transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
 }
 
 .history-rail-toggle:hover {
   color: #d8f9ff;
-  border-color: rgba(0, 229, 255, 0.5);
-  background: rgba(0, 229, 255, 0.18);
-  box-shadow: 0 0 10px rgba(0, 229, 255, 0.22);
+  border-color: rgba(var(--accent-rgb), 0.62);
+  background: rgba(var(--accent-rgb), 0.24);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.35);
 }
 
 .history-rail-toggle:focus-visible {
-  outline: 2px solid rgba(0, 229, 255, 0.62);
+  outline: 2px solid rgba(var(--accent-rgb), 0.72);
   outline-offset: 2px;
 }
 
@@ -809,8 +809,8 @@ useHeroToChatBubbleFly({
 }
 
 .history-rail-turn--active {
-  border-color: rgba(0, 229, 255, 0.2);
-  background: rgba(0, 229, 255, 0.04);
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 .history-rail-turn-action {
@@ -820,8 +820,8 @@ useHeroToChatBubbleFly({
 }
 
 .history-rail-switch-btn {
-  border: 1px solid rgba(0, 229, 255, 0.22);
-  background: rgba(0, 229, 255, 0.06);
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
   font-size: 11px;
   border-radius: 7px;
@@ -831,8 +831,8 @@ useHeroToChatBubbleFly({
 }
 
 .history-rail-switch-btn:hover {
-  background: rgba(0, 229, 255, 0.12);
-  border-color: rgba(0, 229, 255, 0.32);
+  background: rgba(var(--accent-rgb), 0.2);
+  border-color: rgba(var(--accent-rgb), 0.44);
 }
 
 .history-rail-msg :deep(.msg-row) {
@@ -903,7 +903,7 @@ useHeroToChatBubbleFly({
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(0, 229, 255, 0.35);
+  background: rgba(var(--accent-rgb), 0.52);
   flex-shrink: 0;
   transition: background 0.3s ease, box-shadow 0.3s ease;
 }
@@ -1031,9 +1031,9 @@ useHeroToChatBubbleFly({
   overflow-y: auto;
   padding: 10px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(160, 100, 255, 0.38);
-  background: rgba(140, 80, 255, 0.14);
-  color: rgba(206, 180, 255, 0.96);
+  border: 1px solid rgba(var(--secondary-rgb), 0.5);
+  background: rgba(var(--secondary-rgb), 0.2);
+  color: rgba(223, 212, 255, 0.96);
   font-size: 12px;
   font-family: ui-monospace, monospace;
   line-height: 1.35;
@@ -1041,7 +1041,7 @@ useHeroToChatBubbleFly({
   word-break: break-word;
   box-shadow:
     0 4px 18px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(0, 229, 255, 0.06) inset;
+    0 0 0 1px rgba(var(--accent-rgb), 0.14) inset;
   pointer-events: none;
   opacity: 0.9;
   will-change: transform;

@@ -154,14 +154,14 @@ const roleLabel = computed(() => {
 }
 
 .msg-avatar--user {
-  background: rgba(0, 229, 255, 0.08);
-  border-color: rgba(0, 229, 255, 0.25);
+  background: rgba(var(--accent-rgb), 0.12);
+  border-color: rgba(var(--accent-rgb), 0.34);
   color: var(--accent);
 }
 
 .msg-avatar--err {
-  background: rgba(255, 77, 106, 0.08);
-  border-color: rgba(255, 77, 106, 0.25);
+  background: rgba(var(--error-rgb), 0.12);
+  border-color: rgba(var(--error-rgb), 0.32);
   color: var(--error);
 }
 
@@ -199,13 +199,13 @@ const roleLabel = computed(() => {
 }
 
 .msg-row--user .msg-label {
-  color: rgba(0, 229, 255, 0.45);
+  color: rgba(var(--accent-rgb), 0.65);
 }
 
 /* ── User bubble ─────────────────────────────────────── */
 .bubble-user {
-  background: rgba(0, 229, 255, 0.065);
-  border: 1px solid rgba(0, 229, 255, 0.18);
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
   border-radius: 10px 2px 10px 10px;
   padding: 10px 14px;
   font-size: 14px;
@@ -232,20 +232,20 @@ const roleLabel = computed(() => {
 .bubble-bot::-webkit-scrollbar-thumb,
 .bubble-user::-webkit-scrollbar-thumb,
 .bubble-err::-webkit-scrollbar-thumb {
-  background: rgba(0, 229, 255, 0.2);
+  background: rgba(var(--accent-rgb), 0.26);
   border-radius: 3px;
 }
 
 .bubble-bot::-webkit-scrollbar-thumb:hover,
 .bubble-user::-webkit-scrollbar-thumb:hover,
 .bubble-err::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 229, 255, 0.4);
+  background: rgba(var(--accent-rgb), 0.45);
 }
 
 /* ── Error bubble ────────────────────────────────────── */
 .bubble-err {
-  background: rgba(255, 77, 106, 0.065);
-  border: 1px solid rgba(255, 77, 106, 0.18);
+  background: rgba(var(--error-rgb), 0.1);
+  border: 1px solid rgba(var(--error-rgb), 0.24);
   border-radius: 2px 10px 10px 10px;
   padding: 10px 14px;
   font-size: 13px;
@@ -273,9 +273,9 @@ const roleLabel = computed(() => {
   font-size: 11px;
   font-family: ui-monospace, monospace;
   border-radius: 6px;
-  border: 1px solid rgba(255, 77, 106, 0.3);
+  border: 1px solid rgba(var(--error-rgb), 0.38);
   color: rgba(255, 255, 255, 0.65);
-  background: rgba(255, 77, 106, 0.04);
+  background: rgba(var(--error-rgb), 0.08);
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
@@ -283,14 +283,14 @@ const roleLabel = computed(() => {
 .err-action-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(0, 229, 255, 0.06);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 /* ── Bot bubble ──────────────────────────────────────── */
 .bubble-bot {
   background: var(--surface);
   border: 1px solid var(--border-bright);
-  border-left: 2px solid rgba(0, 229, 255, 0.22);
+  border-left: 2px solid rgba(var(--accent-rgb), 0.38);
   border-radius: 2px 10px 10px 10px;
   padding: 12px 16px;
   font-size: 14px;
@@ -319,7 +319,7 @@ const roleLabel = computed(() => {
 
 .feedback-btn:hover {
   color: var(--accent);
-  border-color: rgba(0, 229, 255, 0.25);
+  border-color: rgba(var(--accent-rgb), 0.34);
 }
 
 .feedback-btn:disabled {
@@ -339,26 +339,26 @@ const roleLabel = computed(() => {
 
 /* ── Thought avatar ──────────────────────────────────── */
 .msg-avatar--thought {
-  background: rgba(160, 100, 255, 0.08);
-  border-color: rgba(160, 100, 255, 0.22);
-  color: rgba(180, 130, 255, 0.8);
+  background: rgba(var(--secondary-rgb), 0.12);
+  border-color: rgba(var(--secondary-rgb), 0.3);
+  color: rgba(var(--secondary-rgb), 0.9);
 }
 
 /* ── Thought label ───────────────────────────────────── */
 .msg-row--thought .msg-label {
-  color: rgba(160, 100, 255, 0.5);
+  color: rgba(var(--secondary-rgb), 0.7);
 }
 
 /* ── Thought bubble ──────────────────────────────────── */
 .bubble-thought {
-  background: rgba(140, 80, 255, 0.045);
-  border: 1px solid rgba(160, 100, 255, 0.15);
-  border-left: 2px solid rgba(160, 100, 255, 0.28);
+  background: rgba(var(--secondary-rgb), 0.1);
+  border: 1px solid rgba(var(--secondary-rgb), 0.24);
+  border-left: 2px solid rgba(var(--secondary-rgb), 0.4);
   border-radius: 2px 10px 10px 10px;
   padding: 8px 13px;
   font-size: 12px;
   font-family: ui-monospace, monospace;
-  color: rgba(200, 170, 255, 0.7);
+  color: rgba(223, 212, 255, 0.78);
   font-style: italic;
   line-height: 1.55;
   word-break: break-words;
@@ -377,7 +377,7 @@ const roleLabel = computed(() => {
   padding: 12px 14px;
   border-radius: 8px;
   overflow-x: auto;
-  border: 1px solid rgba(0, 229, 255, 0.09);
+  border: 1px solid rgba(var(--accent-rgb), 0.18);
   margin: 10px 0;
   font-size: 12.5px;
 }
@@ -385,11 +385,11 @@ const roleLabel = computed(() => {
 .bubble-bot code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.845em;
-  background: rgba(0, 229, 255, 0.07);
-  color: #a5f3fc;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: #b8d8ff;
   padding: 0.1em 0.4em;
   border-radius: 4px;
-  border: 1px solid rgba(0, 229, 255, 0.11);
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
 }
 
 .bubble-bot pre code {
@@ -427,7 +427,7 @@ const roleLabel = computed(() => {
 .bubble-bot h3 { font-size: 1em; }
 
 .bubble-bot blockquote {
-  border-left: 2px solid rgba(0, 229, 255, 0.28);
+  border-left: 2px solid rgba(var(--accent-rgb), 0.42);
   padding-left: 12px;
   margin: 8px 0;
   color: #8b90a0;
@@ -437,7 +437,7 @@ const roleLabel = computed(() => {
 .bubble-bot a {
   color: var(--accent);
   text-decoration: none;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.28);
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.4);
 }
 
 .bubble-bot a:hover {
@@ -460,8 +460,8 @@ const roleLabel = computed(() => {
 .bubble-bot th {
   text-align: left;
   padding: 6px 10px;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.14);
-  color: rgba(0, 229, 255, 0.65);
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.24);
+  color: rgba(var(--accent-rgb), 0.84);
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.07em;

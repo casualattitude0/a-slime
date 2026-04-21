@@ -225,7 +225,7 @@ async function handleNewChat() {
 
 .new-btn:hover {
   color: var(--accent);
-  border-color: rgba(0, 229, 255, 0.3);
+  border-color: rgba(var(--accent-rgb), 0.42);
   background: var(--accent-soft);
 }
 
@@ -289,7 +289,7 @@ async function handleNewChat() {
 
 .chat-item--active {
   background: var(--surface-2);
-  border-color: rgba(0, 229, 255, 0.14);
+  border-color: rgba(var(--accent-rgb), 0.24);
 }
 
 .chat-item--active .chat-title {
@@ -370,7 +370,7 @@ async function handleNewChat() {
   flex: 1;
   min-width: 0;
   background: var(--surface-3);
-  border: 1px solid rgba(0, 229, 255, 0.3);
+  border: 1px solid rgba(var(--accent-rgb), 0.42);
   border-radius: 5px;
   color: var(--text);
   font-size: 12px;
@@ -380,6 +380,6 @@ async function handleNewChat() {
 }
 
 .rename-input:focus {
-  border-color: rgba(0, 229, 255, 0.5);
+  border-color: rgba(var(--accent-rgb), 0.62);
 }
 </style>
