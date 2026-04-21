@@ -14,6 +14,8 @@ const props = defineProps<{
   feedbackRating?: number
   showActions?: boolean
   streaming?: boolean
+  /** Hide transcript bubble until fly animation lands (streaming bot only) */
+  awaitFlyReveal?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -50,6 +52,7 @@ const roleLabel = computed(() => {
       'msg-row--bot': role === 'bot',
       'msg-row--err': role === 'err',
       'msg-row--thought': role === 'thought',
+      'msg-row--await-fly': role === 'bot' && awaitFlyReveal,
     }"
   >
     <!-- Avatar (bot / err / thought — left side) -->
@@ -73,6 +76,7 @@ const roleLabel = computed(() => {
       <div
         v-if="role === 'bot'"
         class="bubble-bot prose-content"
+        :data-bot-streaming="streaming ? '' : undefined"
       >
         <span v-if="streaming">{{ text }}</span>
         <span v-else v-html="renderedText"></span>
@@ -122,6 +126,11 @@ const roleLabel = computed(() => {
 
 .msg-row--user {
   flex-direction: row-reverse;
+}
+
+.msg-row--await-fly .msg-bubble,
+.msg-row--await-fly > .msg-avatar {
+  visibility: hidden;
 }
 
 /* ── Avatar ──────────────────────────────────────────── */

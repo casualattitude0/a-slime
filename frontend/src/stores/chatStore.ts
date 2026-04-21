@@ -115,6 +115,12 @@ export const useChatStore = defineStore('chat', () => {
 
     if (obj.event === 'delta' && obj.text) {
       streamingReply.value += String(obj.text)
+      if (streamingBotIndex.value < 0) {
+        messages.value.push({ role: 'bot', text: streamingReply.value })
+        streamingBotIndex.value = messages.value.length - 1
+      } else {
+        messages.value[streamingBotIndex.value]!.text = streamingReply.value
+      }
     }
 
     if (obj.event === 'done') {
@@ -122,13 +128,19 @@ export const useChatStore = defineStore('chat', () => {
       status.value = ''
 
       if (obj.terminated) {
-        streamingBotIndex.value = -1
+        if (streamingBotIndex.value >= 0) {
+          messages.value.splice(streamingBotIndex.value, 1)
+          streamingBotIndex.value = -1
+        }
         streamingReply.value = ''
         return { done: true }
       }
 
       if (obj.error) {
-        streamingBotIndex.value = -1
+        if (streamingBotIndex.value >= 0) {
+          messages.value.splice(streamingBotIndex.value, 1)
+          streamingBotIndex.value = -1
+        }
         streamingReply.value = ''
         const llmErr: LLMErrorPayload | undefined = obj.llm_error ?? undefined
         const idx = messages.value.length
@@ -137,12 +149,19 @@ export const useChatStore = defineStore('chat', () => {
           pendingLLMError.value = { messageIndex: idx, payload: llmErr, originalText }
         }
       } else if (obj.reply) {
-        messages.value.push({
-          role: 'bot',
+        const finalized = {
+          role: 'bot' as const,
           text: obj.reply,
           messageRef: obj.message_ref || undefined,
-          feedbackStatus: 'idle',
-        })
+          feedbackStatus: 'idle' as const,
+        }
+        if (streamingBotIndex.value >= 0) {
+          messages.value[streamingBotIndex.value] = finalized
+        } else {
+          messages.value.push(finalized)
+        }
+      } else if (streamingBotIndex.value >= 0) {
+        messages.value.splice(streamingBotIndex.value, 1)
       }
       streamingBotIndex.value = -1
       streamingReply.value = ''
@@ -151,7 +170,10 @@ export const useChatStore = defineStore('chat', () => {
 
     if (obj.event === 'error') {
       status.value = ''
-      streamingBotIndex.value = -1
+      if (streamingBotIndex.value >= 0) {
+        messages.value.splice(streamingBotIndex.value, 1)
+        streamingBotIndex.value = -1
+      }
       streamingReply.value = ''
       messages.value.push({ role: 'err', text: obj.error || 'Stream error' })
       return { done: true }
@@ -205,8 +227,14 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     } catch (e: any) {
-      if (e?.name === 'AbortError') { status.value = ''; return }
+      if (e?.name === 'AbortError') {
+        status.value = ''
+        return
+      }
       status.value = ''
+      if (streamingBotIndex.value >= 0) {
+        messages.value.splice(streamingBotIndex.value, 1)
+      }
       streamingBotIndex.value = -1
       streamingReply.value = ''
       messages.value.push({ role: 'err', text: String(e) })
@@ -236,6 +264,9 @@ export const useChatStore = defineStore('chat', () => {
 
       ws.onerror = () => {
         status.value = ''
+        if (streamingBotIndex.value >= 0) {
+          messages.value.splice(streamingBotIndex.value, 1)
+        }
         streamingBotIndex.value = -1
         streamingReply.value = ''
         messages.value.push({ role: 'err', text: 'WebSocket error' })
@@ -266,6 +297,9 @@ export const useChatStore = defineStore('chat', () => {
         await _sendSSE(text, llmMode)
       }
     } finally {
+      if (streamingBotIndex.value >= 0) {
+        messages.value.splice(streamingBotIndex.value, 1)
+      }
       streamingBotIndex.value = -1
       streamingReply.value = ''
       status.value = ''
@@ -282,6 +316,9 @@ export const useChatStore = defineStore('chat', () => {
     if (_activeWs) {
       _activeWs.close()
       _activeWs = null
+    }
+    if (streamingBotIndex.value >= 0) {
+      messages.value.splice(streamingBotIndex.value, 1)
     }
     streamingBotIndex.value = -1
     streamingReply.value = ''

@@ -8,6 +8,7 @@ import ChatInput from './ChatInput.vue'
 import MemoryPanel from './MemoryPanel.vue'
 import ConversationSidebar from './ConversationSidebar.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
+import { useHeroToChatBubbleFly } from '../composables/useHeroToChatBubbleFly'
 
 const chatStore = useChatStore()
 const { messages, status, streamingReply, isLoading, activeVersionId, versions, pendingLLMError, streamingBotIndex, transport } = storeToRefs(chatStore)
@@ -16,6 +17,7 @@ const toggleTransport = () => {
   transport.value = transport.value === 'ws' ? 'sse' : 'ws'
 }
 const logRef = ref<HTMLElement | null>(null)
+const heroAvatarRef = ref<HTMLImageElement | null>(null)
 const showPanel = ref(false)
 const sidebarOpen = ref(localStorage.getItem('agent_sidebar_open') !== '0')
 const heroThinkingText = computed(() => streamingReply.value || status.value || 'AI 思考中')
@@ -53,11 +55,13 @@ const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' }) => {
 }
 
 const handleTerminate = () => {
+  hideBubbleUntilFlyIndex.value = null
   chatStore.terminateMessage()
 }
 
 const handleClear = () => {
   if (confirm('Clear all chat history?')) {
+    hideBubbleUntilFlyIndex.value = null
     chatStore.clearHistory()
   }
 }
@@ -73,6 +77,23 @@ const activeVersionName = () => {
   const v = versions.value.find((v) => v.version_id === activeVersionId.value)
   return v?.name ?? '—'
 }
+
+/** Which message row stays hidden until the fly overlay lands (survives streamingBotIndex clearing on done). */
+const hideBubbleUntilFlyIndex = ref<number | null>(null)
+
+watch(streamingBotIndex, (idx, prev) => {
+  if (idx >= 0 && prev === -1) hideBubbleUntilFlyIndex.value = idx
+})
+
+useHeroToChatBubbleFly({
+  streamingBotIndex,
+  streamingReply,
+  logRef,
+  avatarRef: heroAvatarRef,
+  onFlyArrived: () => {
+    hideBubbleUntilFlyIndex.value = null
+  },
+})
 </script>
 
 <template>
@@ -149,6 +170,7 @@ const activeVersionName = () => {
               :llm-error="msg.llmError"
               :show-actions="pendingLLMError?.messageIndex === i"
               :streaming="streamingBotIndex === i"
+              :await-fly-reveal="hideBubbleUntilFlyIndex === i"
               @fix-issue="chatStore.fixIssue()"
               @answer-immediately="chatStore.answerImmediately()"
               @feedback="(rating) => handleFeedback(rating, msg.messageRef)"
@@ -171,11 +193,11 @@ const activeVersionName = () => {
       <div class="composer-inner">
         <!-- Hero banner -->
         <div class="hero-banner">
-          <div v-if="isLoading" class="hero-thinking-bubble">{{ heroThinkingText }}</div>
+          <div v-if="isLoading && streamingBotIndex === -1" class="hero-thinking-bubble">{{ heroThinkingText }}</div>
           <div class="hero-activity">
             <span class="hero-activity-dot" :class="isLoading ? 'dot-active' : ''"></span>
           </div>
-          <img :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
+          <img ref="heroAvatarRef" :src="aiSlimeAvatar" alt="Agent" class="hero-avatar" />
         </div>
 
         <!-- Status strip -->
@@ -518,5 +540,32 @@ const activeVersionName = () => {
 .sidebar-leave-to {
   width: 0 !important;
   opacity: 0;
+}
+</style>
+
+<style>
+.bubble-fly-clone {
+  position: fixed;
+  z-index: 9999;
+  max-width: min(560px, calc(100vw - 24px));
+  max-height: min(72vh, 520px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(160, 100, 255, 0.38);
+  background: rgba(140, 80, 255, 0.14);
+  color: rgba(206, 180, 255, 0.96);
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow:
+    0 4px 18px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(0, 229, 255, 0.06) inset;
+  pointer-events: none;
+  opacity: 0.9;
+  will-change: transform;
 }
 </style>
