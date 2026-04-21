@@ -33,7 +33,6 @@ const {
   activeTurnIndex,
   setActiveTurnByHistorySelection,
   focusNewestTurn,
-  focusDraftTurn,
 } = useChatMessageSplit(messages)
 
 const activeAgentEntries = computed(() => {
@@ -124,6 +123,7 @@ onMounted(async () => {
 
 const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' }) => {
   chatStore.sendMessage(payload.text, payload.llmMode)
+  focusNewestTurn()
 }
 
 const handleTerminate = () => {
@@ -169,7 +169,7 @@ watch(streamingBotIndex, (idx, prev) => {
 })
 
 watch(persistedTurnTick, () => {
-  focusDraftTurn()
+  focusNewestTurn()
 })
 
 useHeroToChatBubbleFly({
