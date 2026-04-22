@@ -141,7 +141,8 @@ def build_tool_guidance(*, is_nvidia: bool) -> str:
             "NVIDIA API 節流（每則使用者訊息可進行的 Thought/Action 輪次有限）：\n"
             "- 能不呼叫工具就直接輸出 Final Answer。\n"
             "- 若需工具：規劃最短單一路徑，避免連續試錯或多餘查詢。\n"
-            "- 既有對話上文已足夠時，不要重複 search_memory／web_search。\n\n"
+            "- 既有對話上文已足夠時，不要重複 search_memory／web_search。\n"
+            "- 重要：當使用者詢問你不清楚的特定名詞、專案或概念時，請務必先呼叫 search_memory 查詢，不要直接回答不知道。\n\n"
         )
 
     return nvidia_efficiency_preamble + (
@@ -194,6 +195,7 @@ def react_hard_rules_extra(*, is_nvidia: bool) -> str:
         "- For today's date or local wall-clock time, call get_local_datetime with "
         "Action Input: {{}}\n"
         "- Do not use execute_shell_command only to run date.\n"
+        "- If the user asks about a specific entity or concept you don't know, you MUST use search_memory before answering.\n"
     )
 
 
