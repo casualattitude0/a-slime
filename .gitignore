@@ -8,3 +8,4 @@ chroma_db/
 data/telemetry/user_feedback.jsonl
 data/telemetry/agent_events.jsonl
 chat_registry.json
+google_oauth_token.json
