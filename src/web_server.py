@@ -986,8 +986,6 @@ async def _stream_pipeline(
                 phase = "llm_requesting_model"
                 model_label = str(payload.get("llm_model_label") or "LLM")
                 label = f"正在與 {model_label} 溝通"
-                if model_label == "NVIDIA":
-                    label += "（長推理／工具迴圈可數分鐘；無串流 token 時畫面會停在此）"
                 ev["phase"] = phase
                 ev["label"] = label
             _record_agent_event(

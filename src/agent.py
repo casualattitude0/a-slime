@@ -21,6 +21,7 @@ from src.tools import (
     make_calendar_delete_tool,
     make_calendar_tool,
     make_calendar_update_tool,
+    make_local_datetime_tool,
     make_memory_tools,
     make_reasoning_tool,
     make_shell_tool,
@@ -195,6 +196,48 @@ _NON_VAGUE_QUESTION_HINTS = (
 
 def _is_ollama_llm(llm: BaseChatModel) -> bool:
     return "ollama" in type(llm).__name__.lower()
+
+
+def _is_nvidia_llm(llm: BaseChatModel) -> bool:
+    """ChatNVIDIA often returns prose instead of structured tool_calls; use ReAct like Ollama."""
+    return "chatnvidia" in type(llm).__name__.lower()
+
+
+def _use_react_agent_llm(llm: BaseChatModel) -> bool:
+    if _is_ollama_llm(llm):
+        return True
+    if _is_nvidia_llm(llm):
+        raw = (os.environ.get("AGENT_NVIDIA_USE_REACT") or "1").strip().lower()
+        return raw not in ("0", "false", "no", "off")
+    return False
+
+
+def _nvidia_agent_max_iterations() -> int:
+    raw = (os.environ.get("AGENT_NVIDIA_MAX_ITERATIONS") or "5").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 5
+    return max(1, min(n, 15))
+
+
+def _nvidia_react_history_tail_limit() -> int | None:
+    raw = (os.environ.get("AGENT_NVIDIA_REACT_HISTORY_MSGS") or "16").strip().lower()
+    if raw in ("", "all", "full", "unlimited", "0"):
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 16
+    return max(2, min(n, 48))
+
+
+def _maybe_trim_chat_messages(history: Any, limit: int | None) -> Any:
+    if limit is None or not history:
+        return history
+    if isinstance(history, list) and len(history) > limit:
+        return history[-limit:]
+    return history
 
 
 def _extract_memory_save_content(message: str) -> str | None:
@@ -421,49 +464,6 @@ def make_gemini_llm(*, model: str | None = None) -> BaseChatModel:
     return ChatGoogleGenerativeAI(model=m, temperature=0, google_api_key=api_key)
 
 
-def _patch_nvidia_http_request_timeout(llm: BaseChatModel, timeout_sec: float) -> None:
-    """langchain-nvidia-ai-endpoints uses requests without timeouts; hangs look like UI freeze."""
-    client = getattr(llm, "_client", None)
-    if client is None:
-        return
-    orig_factory = getattr(client, "_create_session", None)
-    if not callable(orig_factory):
-        return
-
-    def wrapped_factory() -> Any:
-        sess = orig_factory()
-        orig_request = sess.request
-
-        def bound_request(method: str, url: str, **kwargs: Any) -> Any:
-            kwargs.setdefault("timeout", timeout_sec)
-            return orig_request(method, url, **kwargs)
-
-        sess.request = bound_request  # type: ignore[method-assign]
-        return sess
-
-    client.get_session_fn = wrapped_factory  # type: ignore[method-assign]
-
-
-def _patch_nvidia_aiohttp_stream_timeout(llm: BaseChatModel, timeout_sec: float) -> None:
-    """Streaming uses aiohttp ClientSession without total timeout by default."""
-    client = getattr(llm, "_client", None)
-    if client is None:
-        return
-    import aiohttp
-
-    def async_session_factory() -> Any:
-        connector = aiohttp.TCPConnector(ssl=client._build_ssl_context())
-        return aiohttp.ClientSession(
-            connector=connector,
-            timeout=aiohttp.ClientTimeout(
-                total=timeout_sec,
-                sock_connect=min(45.0, timeout_sec),
-            ),
-        )
-
-    client.get_async_session_fn = async_session_factory  # type: ignore[method-assign]
-
-
 def make_nvidia_llm(*, model: str | None = None) -> BaseChatModel:
     from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
@@ -479,26 +479,7 @@ def make_nvidia_llm(*, model: str | None = None) -> BaseChatModel:
     if base_url:
         kwargs["base_url"] = base_url
 
-    llm = ChatNVIDIA(**kwargs)
-
-    raw_http = (os.environ.get("NVIDIA_REQUEST_TIMEOUT") or "180").strip()
-    try:
-        http_timeout = float(raw_http)
-        if http_timeout > 0:
-            _patch_nvidia_http_request_timeout(llm, http_timeout)
-            _patch_nvidia_aiohttp_stream_timeout(llm, http_timeout)
-    except ValueError:
-        pass
-
-    # NVIDIA client Field `timeout`: max poll duration after HTTP 202 (hosted async jobs).
-    poll_raw = (os.environ.get("NVIDIA_POLL_TIMEOUT") or "").strip()
-    if poll_raw:
-        try:
-            setattr(getattr(llm, "_client", None), "timeout", float(poll_raw))
-        except (TypeError, ValueError):
-            pass
-
-    return llm
+    return ChatNVIDIA(**kwargs)
 
 
 def _make_llm() -> BaseChatModel:
@@ -984,6 +965,20 @@ def build_executor(
     calendar_delete_tool = make_calendar_delete_tool()
 
     chat_model = llm or _make_llm()
+    nvidia_tool_line = ""
+    datetime_instant_rule = (
+        "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
+    )
+    if _is_nvidia_llm(chat_model):
+        nvidia_tool_line = (
+            "- get_local_datetime：取得應用程式主機的本機日期與時間（無 shell、無參數）；"
+            "「今天幾號／現在幾點」或要以「今天」為基準建立行事曆時必用，優先於 execute_shell_command。\n"
+        )
+        datetime_instant_rule = (
+            "- 若使用者詢問今天日期、目前時間、現在幾點，或事件要訂在「今天」："
+            "必須先用 get_local_datetime（Action Input 使用 {{}}），不可憑空假設日期。\n"
+            "- 僅在需要 grep、tail、ls、讀取日誌等時才用 execute_shell_command。\n\n"
+        )
     character_section = _build_character_prompt_section()
     system_intro = (
         "你是一位研究助理，目標是協助使用者完成工作。\n"
@@ -992,20 +987,32 @@ def build_executor(
         "- 嚴禁使用任何簡體中文字。\n"
         "- 即使使用者輸入英文或簡體中文，仍以繁體中文回覆。"
     )
-    system_guidance = (
+    nvidia_efficiency_preamble = ""
+    if _is_nvidia_llm(chat_model):
+        nvidia_efficiency_preamble = (
+            "NVIDIA API 節流（每則使用者訊息可進行的 Thought/Action 輪次有限）：\n"
+            "- 能不呼叫工具就直接輸出 Final Answer。\n"
+            "- 若需工具：規劃最短單一路徑，避免連續試錯或多餘查詢。\n"
+            "- 既有對話上文已足夠時，不要重複 search_memory／web_search。\n\n"
+        )
+    system_guidance = nvidia_efficiency_preamble + (
         "可用工具：\n"
         "- search_memory：持久化語意記憶，保存過往事實與筆記。若問題可能依賴既有脈絡，優先先查詢。\n"
         "- save_to_memory：儲存可長期重用的重要資訊（使用者偏好、決策、關鍵發現）。僅保存有意義且可重用的內容。\n"
         "- web_search：使用 DuckDuckGo 搜尋最新網路資訊。\n"
         "- web_fetch：擷取並清理指定網址文字內容，可搭配 web_search 讀取候選結果。\n"
+        f"{nvidia_tool_line}"
         "- execute_shell_command：執行本機 Shell 指令（如 date、grep、tail、ls）以獲取系統時間、讀取日誌或抓取特定資料。\n"
         "- ask_reasoning_model：將複雜、多步驟的分析或綜整委派給更強的推理模型，並明確附上問題與已蒐集脈絡。\n"
         "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
-        "- calendar_create_event：新增 Google 行事曆事件，並同步嘗試 Apple 行事曆。\n"
+        "- calendar_create_event：新增 Google 行事曆事件。\n"
         "- calendar_update_event：修改既有 Google 行事曆事件（標題、時間、描述）。\n"
         "- calendar_delete_event：刪除既有 Google 行事曆事件。\n\n"
+        "行事曆誠實規則：\n"
+        "- 僅當 calendar_create_event 回傳的 JSON 中 \"ok\": true 且 event_ids.google 為非空字串時，才可宣稱「Google 行事曆已建立該事件」。\n"
+        "- 若 \"ok\": false、錯誤訊息、或缺少 Google 事件 id，必須據實說明未寫入 Google（不可假裝已成功）。應用程式內提醒與 Google 行事曆不同步；不得僅因語意推測成功。\n\n"
         "即時性規則：\n"
-        "- 若使用者詢問今天日期、目前時間、現在幾點等即時資訊，必須先用 execute_shell_command 執行 date 取得結果，不可憑記憶回答。\n\n"
+        f"{datetime_instant_rule}"
         "情境辨識與自然對話：\n"
         "1. 辨別情境：根據使用者輸入自動判斷當下需求（例如日常閒聊、深入研究、系統操作、記憶檢索）。\n"
         "2. 隱形工具調用：若需要搜尋、記憶或執行指令，直接在背後呼叫對應工具，不向使用者交代工具名稱或內部拆解步驟，將結果自然融入回覆。\n"
@@ -1037,6 +1044,7 @@ def build_executor(
         *memory_tools,
         web_search_tool,
         web_fetch_tool,
+        *([make_local_datetime_tool()] if _is_nvidia_llm(chat_model) else []),
         shell_tool,
         reasoning_tool,
         retriever_tool,
@@ -1045,14 +1053,31 @@ def build_executor(
         calendar_delete_tool,
     ]
     save_memory_tool = next((t for t in memory_tools if getattr(t, "name", "") == "save_to_memory"), None)
-    if _is_ollama_llm(chat_model):
+    if _use_react_agent_llm(chat_model):
         from langchain_classic.agents import create_react_agent  # noqa: PLC0415
         from langchain_core.prompts import PromptTemplate
         from langchain_core.runnables import RunnableLambda
 
+        nvidia_react_extra = ""
+        if _is_nvidia_llm(chat_model):
+            nvidia_react_extra = (
+                "- For today's date or local wall-clock time, call get_local_datetime with "
+                "Action Input: {{}}\n"
+                "- Do not use execute_shell_command only to run date.\n"
+            )
         react_template = (
             system_message
             + "\n\n---\n"
+            "Hard rules:\n"
+            + nvidia_react_extra
+            + "- If the user asks to add or change Google Calendar events, you MUST run the matching "
+            "calendar tool (calendar_create_event / calendar_update_event / calendar_delete_event) "
+            "and use the Observation before saying the event was created or updated.\n"
+            "- Never claim a calendar action succeeded without a successful Observation from that tool.\n"
+            '- Never say Google Calendar created an event unless Observation JSON has "ok": true '
+            "and a non-empty event_ids.google.\n"
+            "- For calendar_create_event Action Input JSON, use separate top-level keys "
+            '`title`, `start_at`, `end_at` (ISO-8601 strings); never embed the whole payload only inside `title`.\n\n'
             "You can use the following tools:\n{tools}\n\n"
             "If you need a tool, use EXACTLY this format:\n"
             "Thought: decide what to do next\n"
@@ -1074,19 +1099,27 @@ def build_executor(
 
         def _preprocess_react(inputs: dict[str, Any]) -> dict[str, Any]:
             out = dict(inputs)
-            out["chat_history"] = _format_chat_history_as_text(inputs.get("chat_history"))
+            hist = inputs.get("chat_history")
+            if _is_nvidia_llm(chat_model):
+                hist = _maybe_trim_chat_messages(
+                    hist, _nvidia_react_history_tail_limit()
+                )
+            out["chat_history"] = _format_chat_history_as_text(hist)
             return out
 
         agent = RunnableLambda(_preprocess_react) | _raw_react_agent
     else:
         agent = create_tool_calling_agent(chat_model, tools, prompt)
     verbose = os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
+    exec_max_iter = (
+        _nvidia_agent_max_iterations() if _is_nvidia_llm(chat_model) else 10
+    )
     executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=verbose,
         handle_parsing_errors=True,
-        max_iterations=10,
+        max_iterations=exec_max_iter,
     )
     return _PrefetchExecutor(
         executor,
@@ -1250,6 +1283,7 @@ def _tool_name_to_status(name: str) -> tuple[str, str]:
         "search_memory": ("tool_running", "查詢長期記憶"),
         "save_to_memory": ("tool_running", "儲存至長期記憶"),
         "execute_shell_command": ("tool_running", "執行 Shell 指令"),
+        "get_local_datetime": ("tool_running", "取得本機日期時間"),
         "ask_reasoning_model": ("tool_running", "委派推理模型"),
         "calendar_create_event": ("tool_running", "新增行事曆事件"),
         "calendar_update_event": ("tool_running", "修改行事曆事件"),
@@ -1346,30 +1380,13 @@ async def astream_executor(
     final_output: dict[str, Any] = {}
     seen_thinking = False
     seen_first_text_delta = False
+    streamed_text_so_far = ""
 
     try:
-        raw_idle = (os.environ.get("AGENT_STREAM_IDLE_TIMEOUT") or "600").strip()
-        try:
-            idle_timeout = float(raw_idle)
-        except ValueError:
-            idle_timeout = 600.0
-        if idle_timeout <= 0:
-            idle_timeout = 600.0
-
-        event_stream = inner_exec.astream_events(run_payload, version="v2")
-        while True:
+        async for ev in inner_exec.astream_events(run_payload, version="v2"):
             if cancel_check is not None and cancel_check():
                 yield {"event": "_cancelled"}
                 return
-            try:
-                ev = await asyncio.wait_for(anext(event_stream), timeout=idle_timeout)
-            except StopAsyncIteration:
-                break
-            except asyncio.TimeoutError as te:
-                raise TimeoutError(
-                    f"Agent produced no stream activity for {idle_timeout:.0f}s "
-                    f"(AGENT_STREAM_IDLE_TIMEOUT). NVIDIA/GLM long runs may need a higher value."
-                ) from te
 
             ev_name: str = ev.get("event", "")
             run_id: str = ev.get("run_id", "")
@@ -1416,10 +1433,19 @@ async def astream_executor(
                 chunk = (ev.get("data") or {}).get("chunk")
                 text = _chunk_to_text(chunk)
                 if text:
+                    # Some providers emit cumulative content per chunk instead of true deltas.
+                    # Ensure we only forward the new suffix to avoid duplicated output.
+                    if streamed_text_so_far and text.startswith(streamed_text_so_far):
+                        delta_text = text[len(streamed_text_so_far) :]
+                    else:
+                        delta_text = text
+                    streamed_text_so_far = text
+                    if not delta_text:
+                        continue
                     if not seen_first_text_delta:
                         seen_first_text_delta = True
                         yield {"event": "status", "phase": "llm_streaming", "label": "模型回覆中"}
-                    yield {"event": "delta", "text": text}
+                    yield {"event": "delta", "text": delta_text}
 
         yield {"event": "_done", "output": final_output}
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import shlex
 import subprocess
 import uuid
@@ -17,7 +18,7 @@ from bs4 import BeautifulSoup
 from langchain_community.vectorstores import Chroma
 from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 _MEMORY_COLLECTION = "agent_memory"
 _ReminderSink = Callable[[dict[str, Any]], None]
@@ -390,14 +391,208 @@ def make_shell_tool() -> StructuredTool:
     )
 
 
+def _get_local_datetime() -> str:
+    now = datetime.now().astimezone()
+    tz = now.tzname() or ""
+    return (
+        f"local_iso: {now.isoformat(timespec='seconds')}\n"
+        f"today_date: {now.strftime('%Y-%m-%d')}\n"
+        f"local_clock: {now.strftime('%H:%M:%S')}\n"
+        f"timezone_label: {tz}"
+    )
+
+
+def make_local_datetime_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        name="get_local_datetime",
+        description=(
+            "Return current local date and time from the application host without shell "
+            "(no arguments). Use for today's date, current time, or anchoring "
+            "calendar_create_event to 'today'. Prefer this over execute_shell_command with date."
+        ),
+        func=_get_local_datetime,
+    )
+
+
+_ISO_DT_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+
+
+def _extract_two_iso_datetimes(text: str) -> tuple[str | None, str | None]:
+    matches = list(_ISO_DT_PATTERN.finditer(text))
+    if len(matches) >= 2:
+        return matches[0].group(0), matches[1].group(0)
+    return None, None
+
+
+_LOOSE_CAL_KV_RE = re.compile(
+    r'"(start_at|end_at|startAt|endAt|begin_at|title|timezone|description|reminder_message|'
+    r"source_session_id|event_id)"
+    r'"\s*:\s*"((?:[^"\\]|\\.)*)"',
+)
+
+
+def _unescape_json_string_fragment(s: str) -> str:
+    return (
+        s.replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace('\\"', '"')
+        .replace("\\\\", "\\")
+    )
+
+
+def _calendar_fields_from_jsonish_blob(blob: str) -> dict[str, Any]:
+    """Strict json.loads, else quoted key/value pairs (handles truncated invalid JSON)."""
+    s = (blob or "").strip()
+    if not s.startswith("{"):
+        return {}
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+        return {}
+    except json.JSONDecodeError:
+        pass
+    loose: dict[str, str] = {}
+    for m in _LOOSE_CAL_KV_RE.finditer(s):
+        loose[m.group(1)] = _unescape_json_string_fragment(m.group(2))
+    return loose
+
+
+def _normalize_calendar_create_top_level_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """ReAct / models often send camelCase; LangChain may also bind the whole JSON into one field."""
+    out = dict(data)
+    aliases = (
+        (("startAt", "start_at"), ("start", "start_at"), ("begin_at", "start_at")),
+        (("endAt", "end_at"), ("end", "end_at")),
+        (("timeZone", "timezone"), ("tz", "timezone")),
+    )
+    for pairs in aliases:
+        for src, dst in pairs:
+            if dst not in out or not str(out.get(dst) or "").strip():
+                v = out.get(src)
+                if v is None:
+                    continue
+                s = v.strip() if isinstance(v, str) else str(v).strip()
+                if s:
+                    out[dst] = s
+                    break
+    return out
+
+
+def _merge_calendar_create_nested(data: dict[str, Any]) -> dict[str, Any]:
+    """Fill start_at/end_at/title from nested JSON wrongly passed as title only."""
+    out = _normalize_calendar_create_top_level_keys(dict(data))
+    st = (out.get("start_at") or "").strip()
+    et = (out.get("end_at") or "").strip()
+    if st and et:
+        return out
+
+    blob0 = str(out.get("title") or "")
+    nested = _calendar_fields_from_jsonish_blob(blob0)
+    if nested:
+        for src_key, dst in (
+            ("title", "title"),
+            ("start_at", "start_at"),
+            ("startAt", "start_at"),
+            ("start", "start_at"),
+            ("begin_at", "start_at"),
+            ("end_at", "end_at"),
+            ("endAt", "end_at"),
+            ("end", "end_at"),
+            ("timezone", "timezone"),
+            ("timeZone", "timezone"),
+            ("description", "description"),
+            ("reminder_message", "reminder_message"),
+            ("source_session_id", "source_session_id"),
+        ):
+            if dst in out and str(out.get(dst) or "").strip():
+                continue
+            v = nested.get(src_key)
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip():
+                out[dst] = v.strip()
+            elif isinstance(v, (int, float)) and dst in ("start_at", "end_at"):
+                continue
+            elif not isinstance(v, str):
+                out[dst] = str(v)
+
+        inner_title = nested.get("title")
+        if isinstance(inner_title, str) and inner_title.strip():
+            out["title"] = inner_title.strip()
+
+    st2 = (out.get("start_at") or "").strip()
+    et2 = (out.get("end_at") or "").strip()
+    if not st2 or not et2:
+        ds, de = _extract_two_iso_datetimes(blob0)
+        if ds and not st2:
+            out["start_at"] = ds
+        if de and not et2:
+            out["end_at"] = de
+    return out
+
+
+def _merge_calendar_update_nested(data: dict[str, Any]) -> dict[str, Any]:
+    """Unpack JSON wrongly placed in event_id (or title) for update tool."""
+    out = dict(data)
+    eid = str(out.get("event_id") or "").strip()
+    if eid.startswith("{"):
+        nested = _calendar_fields_from_jsonish_blob(eid)
+        if nested.get("event_id"):
+            out["event_id"] = str(nested["event_id"]).strip()
+        blob_alt = str(out.get("title") or "")
+        src = nested or _calendar_fields_from_jsonish_blob(blob_alt)
+        if src:
+            for src_key, dst in (
+                ("title", "title"),
+                ("start_at", "start_at"),
+                ("startAt", "start_at"),
+                ("start", "start_at"),
+                ("begin_at", "start_at"),
+                ("end_at", "end_at"),
+                ("endAt", "end_at"),
+                ("end", "end_at"),
+                ("timezone", "timezone"),
+                ("timeZone", "timezone"),
+                ("description", "description"),
+            ):
+                if dst in out and str(out.get(dst) or "").strip():
+                    continue
+                v = src.get(src_key)
+                if isinstance(v, str) and v.strip():
+                    out[dst] = v.strip()
+    return out
+
+
 class CalendarCreateEventArgs(BaseModel):
     title: str = Field(description="Event title")
-    start_at: str = Field(description="Event start datetime in ISO-8601")
-    end_at: str = Field(description="Event end datetime in ISO-8601")
+    start_at: str = Field(default="", description="Event start datetime in ISO-8601")
+    end_at: str = Field(default="", description="Event end datetime in ISO-8601")
     timezone: str = Field(default="Asia/Taipei", description="IANA timezone")
     description: str = Field(default="", description="Event description")
     reminder_message: str = Field(default="", description="Reminder message for chat")
     source_session_id: str = Field(default="", description="Origin session id")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_nested_json_title(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            s = data.strip()
+            if not s:
+                return {}
+            if s.startswith("{"):
+                try:
+                    parsed = json.loads(s)
+                    data = parsed if isinstance(parsed, dict) else {"title": str(parsed)}
+                except json.JSONDecodeError:
+                    return {"title": s}
+            else:
+                return {"title": s}
+        if not isinstance(data, dict):
+            return {"title": str(data)}
+        return _merge_calendar_create_nested(data)
 
 
 class CalendarUpdateEventArgs(BaseModel):
@@ -407,6 +602,13 @@ class CalendarUpdateEventArgs(BaseModel):
     end_at: str = Field(default="", description="Event end datetime in ISO-8601")
     timezone: str = Field(default="Asia/Taipei", description="IANA timezone")
     description: str = Field(default="", description="Event description")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_nested_json(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        return _merge_calendar_update_nested(data)
 
 
 class CalendarDeleteEventArgs(BaseModel):
@@ -427,6 +629,65 @@ def _normalize_iso_datetime(raw: str, timezone_name: str) -> datetime:
     return parsed.astimezone(tz)
 
 
+_GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+
+def _calendar_project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _resolve_google_calendar_access_token() -> str:
+    """Prefer OAuth token cache (refreshable); fall back to GOOGLE_CALENDAR_ACCESS_TOKEN."""
+    cache_override = (os.environ.get("GOOGLE_OAUTH_TOKEN_CACHE_FILE") or "").strip()
+    cache_path = Path(cache_override) if cache_override else _calendar_project_root() / "google_oauth_token.json"
+
+    if cache_path.is_file():
+        try:
+            from google.auth.transport.requests import Request as GARequest
+            from google.oauth2.credentials import Credentials
+        except ImportError:
+            pass
+        else:
+            try:
+                creds = Credentials.from_authorized_user_file(
+                    str(cache_path),
+                    scopes=_GOOGLE_CALENDAR_SCOPES,
+                )
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(GARequest())
+                    cache_path.write_text(creds.to_json(), encoding="utf-8")
+                tok = (creds.token or "").strip()
+                if tok:
+                    return tok
+            except Exception:
+                pass
+
+    env_tok = (os.environ.get("GOOGLE_CALENDAR_ACCESS_TOKEN") or "").strip()
+    if env_tok:
+        return env_tok
+    raise RuntimeError(
+        "Missing Google Calendar credentials: set GOOGLE_CALENDAR_ACCESS_TOKEN in .env or run "
+        "scripts/get_google_oauth_token.py to create google_oauth_token.json (optional: "
+        "GOOGLE_OAUTH_TOKEN_CACHE_FILE)."
+    )
+
+
+def _raise_for_calendar_status(resp: httpx.Response, context: str) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = (exc.response.text or "").strip()[:1200]
+        hint = ""
+        if exc.response.status_code == 401:
+            hint = (
+                " OAuth access token expired, revoked, or wrong type (need OAuth user token with "
+                "calendar.events scope, not GEMINI_API_KEY). Refresh: run scripts/get_google_oauth_token.py "
+                "and update GOOGLE_CALENDAR_ACCESS_TOKEN, or install google-auth + use google_oauth_token.json "
+                "for automatic refresh."
+            )
+        raise RuntimeError(f"{context}: HTTP {exc.response.status_code}.{hint}\n{body}") from exc
+
+
 def _create_google_calendar_event(
     *,
     title: str,
@@ -435,9 +696,7 @@ def _create_google_calendar_event(
     timezone_name: str,
     description: str,
 ) -> dict[str, Any]:
-    token = (os.environ.get("GOOGLE_CALENDAR_ACCESS_TOKEN") or "").strip()
-    if not token:
-        raise RuntimeError("Missing GOOGLE_CALENDAR_ACCESS_TOKEN")
+    token = _resolve_google_calendar_access_token()
     calendar_id = (os.environ.get("GOOGLE_CALENDAR_ID") or "primary").strip() or "primary"
     payload = {
         "summary": title,
@@ -452,15 +711,13 @@ def _create_google_calendar_event(
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json=payload,
         )
-        resp.raise_for_status()
+        _raise_for_calendar_status(resp, "Google Calendar create event")
         data = resp.json()
     return {"id": data.get("id", ""), "html_link": data.get("htmlLink", "")}
 
 
 def _google_calendar_headers() -> tuple[str, dict[str, str]]:
-    token = (os.environ.get("GOOGLE_CALENDAR_ACCESS_TOKEN") or "").strip()
-    if not token:
-        raise RuntimeError("Missing GOOGLE_CALENDAR_ACCESS_TOKEN")
+    token = _resolve_google_calendar_access_token()
     calendar_id = (os.environ.get("GOOGLE_CALENDAR_ID") or "primary").strip() or "primary"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     return calendar_id, headers
@@ -496,7 +753,7 @@ def _update_google_calendar_event(
     )
     with httpx.Client(timeout=20.0) as client:
         resp = client.patch(url, headers=headers, json=patch_payload)
-        resp.raise_for_status()
+        _raise_for_calendar_status(resp, "Google Calendar update event")
         data = resp.json()
     return {"id": data.get("id", ""), "html_link": data.get("htmlLink", "")}
 
@@ -512,61 +769,65 @@ def _delete_google_calendar_event(*, event_id: str) -> None:
     )
     with httpx.Client(timeout=20.0) as client:
         resp = client.delete(url, headers=headers)
-        resp.raise_for_status()
-
-
-def _create_apple_calendar_event(
-    *,
-    title: str,
-    start_at: datetime,
-    end_at: datetime,
-    timezone_name: str,
-    description: str,
-) -> dict[str, Any]:
-    endpoint = (os.environ.get("APPLE_CALENDAR_API_URL") or "").strip()
-    token = (os.environ.get("APPLE_CALENDAR_API_TOKEN") or "").strip()
-    if not endpoint or not token:
-        raise RuntimeError("Apple calendar API not configured")
-    payload = {
-        "title": title,
-        "description": description,
-        "start_at": start_at.isoformat(),
-        "end_at": end_at.isoformat(),
-        "timezone": timezone_name,
-    }
-    with httpx.Client(timeout=20.0) as client:
-        resp = client.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json() if resp.content else {}
-    return {"id": data.get("id", ""), "url": data.get("url", "")}
+        _raise_for_calendar_status(resp, "Google Calendar delete event")
 
 
 def make_calendar_tool() -> StructuredTool:
     def _create_event(
         title: str,
-        start_at: str,
-        end_at: str,
+        start_at: str = "",
+        end_at: str = "",
         timezone: str = "Asia/Taipei",
         description: str = "",
         reminder_message: str = "",
         source_session_id: str = "",
     ) -> str:
         t = (title or "").strip()
+        sa = (start_at or "").strip()
+        ea = (end_at or "").strip()
+        tz = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
+        desc = (description or "").strip()
+        rem = (reminder_message or "").strip()
+        sid = (source_session_id or "").strip()
+
+        # ReAct often binds the entire Action Input JSON string into `title` only.
+        if t.startswith("{") and (not sa or not ea):
+            try:
+                blob = json.loads(t)
+            except json.JSONDecodeError:
+                blob = None
+            if isinstance(blob, dict):
+                blob = _merge_calendar_create_nested(blob)
+                t = str(blob.get("title") or "").strip() or t
+                sa = str(blob.get("start_at") or "").strip() or sa
+                ea = str(blob.get("end_at") or "").strip() or ea
+                if blob.get("timezone"):
+                    tz = str(blob.get("timezone") or "").strip() or tz
+                if blob.get("description") is not None and not desc:
+                    desc = str(blob.get("description") or "").strip()
+                if blob.get("reminder_message") is not None and not rem:
+                    rem = str(blob.get("reminder_message") or "").strip()
+                if blob.get("source_session_id") is not None and not sid:
+                    sid = str(blob.get("source_session_id") or "").strip()
+
         if not t:
             return '{"ok": false, "error": "title is required"}'
-        tz_name = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
+        if not sa or not ea:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "start_at and end_at are required (ISO-8601).",
+                },
+                ensure_ascii=False,
+            )
+        tz_name = tz
         try:
-            start_dt = _normalize_iso_datetime(start_at, tz_name)
-            end_dt = _normalize_iso_datetime(end_at, tz_name)
+            start_dt = _normalize_iso_datetime(sa, tz_name)
+            end_dt = _normalize_iso_datetime(ea, tz_name)
         except Exception as exc:
             return json.dumps({"ok": False, "error": f"invalid datetime: {str(exc)}"}, ensure_ascii=False)
         if end_dt <= start_dt:
             return json.dumps({"ok": False, "error": "end_at must be after start_at"}, ensure_ascii=False)
-        desc = (description or "").strip()
         warning_messages: list[str] = []
         google_result: dict[str, Any] = {}
         apple_result: dict[str, Any] = {}
@@ -591,25 +852,40 @@ def make_calendar_tool() -> StructuredTool:
                 ensure_ascii=False,
             )
 
-        try:
-            apple_result = _create_apple_calendar_event(
-                title=t,
-                start_at=start_dt,
-                end_at=end_dt,
-                timezone_name=tz_name,
-                description=desc,
+        gid = str(google_result.get("id") or "").strip()
+        if not gid:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "google_success": False,
+                    "apple_success": False,
+                    "error": "google calendar API returned no event id (event was not created)",
+                },
+                ensure_ascii=False,
             )
-            apple_success = True
-        except Exception as exc:
-            apple_success = False
-            warning_messages.append(f"apple calendar create skipped/failed: {str(exc)}")
+
+        # Apple Calendar sync disabled (API errors caused agent retry loops).
+        # try:
+        #     apple_result = _create_apple_calendar_event(
+        #         title=t,
+        #         start_at=start_dt,
+        #         end_at=end_dt,
+        #         timezone_name=tz_name,
+        #         description=desc,
+        #     )
+        #     apple_success = True
+        # except Exception as exc:
+        #     apple_success = False
+        #     warning_messages.append(f"apple calendar create skipped/failed: {str(exc)}")
+        apple_result = {"id": "", "url": ""}
+        apple_success = False
 
         _emit_reminder(
             {
                 "title": t,
                 "reminder_at": start_dt.isoformat(),
-                "message": (reminder_message or "").strip() or f"提醒：{t}",
-                "source_session_id": (source_session_id or "").strip(),
+                "message": rem or f"提醒：{t}",
+                "source_session_id": sid,
             }
         )
         result = {
@@ -617,7 +893,7 @@ def make_calendar_tool() -> StructuredTool:
             "google_success": google_success,
             "apple_success": apple_success,
             "event_ids": {
-                "google": google_result.get("id", ""),
+                "google": gid,
                 "apple": apple_result.get("id", ""),
             },
             "event_links": {
@@ -631,8 +907,10 @@ def make_calendar_tool() -> StructuredTool:
     return StructuredTool.from_function(
         name="calendar_create_event",
         description=(
-            "Create a calendar event in Google Calendar and attempt Apple Calendar sync. "
-            "Google failure is fatal; Apple failure becomes warning. Also schedules an in-app reminder."
+            "Create a calendar event in Google Calendar. Also schedules an in-app reminder. "
+            "Google failure is fatal. "
+            "Success means JSON with ok:true and non-empty event_ids.google; tell the user Google succeeded "
+            "only if Observation contains those."
         ),
         func=_create_event,
         args_schema=CalendarCreateEventArgs,

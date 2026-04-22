@@ -201,5 +201,58 @@ class TestPythonToolCallRegex(unittest.TestCase):
         self.assertEqual(result, "回覆文字  繼續".strip())
 
 
+# ---------------------------------------------------------------------------
+# 5. Calendar tool args: LLM sometimes stuffs JSON into a single field
+# ---------------------------------------------------------------------------
+
+class TestCalendarCreateEventArgsCoercion(unittest.TestCase):
+
+    def test_json_object_in_title_field(self):
+        m = tools.CalendarCreateEventArgs.model_validate(
+            {
+                "title": (
+                    '{"title": "會議", "start_at": "2026-04-22T10:00:00+08:00", '
+                    '"end_at": "2026-04-22T11:00:00+08:00"}'
+                ),
+            }
+        )
+        self.assertEqual(m.title, "會議")
+        self.assertIn("2026-04-22T10", m.start_at)
+        self.assertIn("2026-04-22T11", m.end_at)
+
+    def test_truncated_json_uses_loose_quoted_keys(self):
+        m = tools.CalendarCreateEventArgs.model_validate(
+            {
+                "title": (
+                    '{"title": "開會", "start_at": "2026-04-22T10:00:00+08:00", '
+                    '"end_at": "2026-04-22T11:00:00+08:00", "extra": "x"'
+                ),
+            }
+        )
+        self.assertEqual(m.title, "開會")
+        self.assertIn("10:00:00", m.start_at)
+
+    def test_two_iso_substrings_in_title(self):
+        m = tools.CalendarCreateEventArgs.model_validate(
+            {
+                "title": "x 2026-04-22T10:00:00+08:00 y 2026-04-22T11:00:00+08:00",
+            }
+        )
+        self.assertIn("2026-04-22T10", m.start_at)
+        self.assertIn("2026-04-22T11", m.end_at)
+
+
+class TestCalendarUpdateEventArgsCoercion(unittest.TestCase):
+
+    def test_json_in_event_id(self):
+        m = tools.CalendarUpdateEventArgs.model_validate(
+            {
+                "event_id": '{"event_id": "ev1", "title": "新標題"}',
+            }
+        )
+        self.assertEqual(m.event_id, "ev1")
+        self.assertEqual(m.title, "新標題")
+
+
 if __name__ == "__main__":
     unittest.main()
