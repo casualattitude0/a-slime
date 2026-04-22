@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ast
 import json
 import os
 import re
@@ -34,6 +33,7 @@ from src.agent import (
     invoke_executor,
     list_rag_items,
     agent_mode_reply,
+    local_quick_reply,
     make_gemini_llm,
     make_nvidia_llm,
     make_ollama_llm,
@@ -228,122 +228,6 @@ def _record_agent_event(
         )
     except Exception:
         pass
-
-
-def _safe_eval_math(expr: str) -> str | None:
-    s = (expr or "").strip()
-    if not s or len(s) > 80:
-        return None
-    if not re.fullmatch(r"[0-9\.\s\+\-\*\/\%\(\)]+", s):
-        return None
-    try:
-        node = ast.parse(s, mode="eval")
-    except Exception:
-        return None
-
-    allowed_nodes = (
-        ast.Expression,
-        ast.BinOp,
-        ast.UnaryOp,
-        ast.Constant,
-        ast.Add,
-        ast.Sub,
-        ast.Mult,
-        ast.Div,
-        ast.Mod,
-        ast.USub,
-        ast.UAdd,
-        ast.Pow,
-        ast.FloorDiv,
-    )
-    if any(not isinstance(n, allowed_nodes) for n in ast.walk(node)):
-        return None
-
-    def _eval(n: ast.AST) -> float:
-        if isinstance(n, ast.Expression):
-            return _eval(n.body)
-        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
-            return float(n.value)
-        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
-            v = _eval(n.operand)
-            return v if isinstance(n.op, ast.UAdd) else -v
-        if isinstance(n, ast.BinOp):
-            l = _eval(n.left)
-            r = _eval(n.right)
-            if isinstance(n.op, ast.Add):
-                return l + r
-            if isinstance(n.op, ast.Sub):
-                return l - r
-            if isinstance(n.op, ast.Mult):
-                return l * r
-            if isinstance(n.op, ast.Div):
-                return l / r
-            if isinstance(n.op, ast.Mod):
-                return l % r
-            if isinstance(n.op, ast.FloorDiv):
-                return l // r
-            if isinstance(n.op, ast.Pow):
-                return l**r
-        raise ValueError("Unsupported expression")
-
-    try:
-        out = _eval(node)
-    except Exception:
-        return None
-    if float(out).is_integer():
-        return str(int(out))
-    return str(out)
-
-
-def _simple_local_reply(message: str) -> str | None:
-    msg = (message or "").strip()
-    if not msg:
-        return None
-
-    math_result = _safe_eval_math(msg)
-    if math_result is not None:
-        return math_result
-
-    low = msg.lower()
-    if low in {"hi", "hello", "hey", "嗨", "你好", "哈囉"}:
-        return "你好"
-    if low in {"thanks", "thank you", "謝謝", "感謝"}:
-        return "不客氣"
-    if low in {"bye", "掰掰", "再見"}:
-        return "再見"
-    return None
-
-
-def _requires_live_time_lookup(message: str) -> bool:
-    msg = (message or "").strip().lower()
-    if not msg:
-        return False
-    keywords = (
-        "今天",
-        "現在",
-        "日期",
-        "時間",
-        "幾點",
-        "幾號",
-        "今日",
-        "today",
-        "current date",
-        "current time",
-        "what date",
-        "what time",
-        "date now",
-        "time now",
-    )
-    return any(k in msg for k in keywords)
-
-
-def _vague_short_clarify_reply(message: str) -> str | None:
-    msg = (message or "").strip()
-    if not msg:
-        return None
-    if _is_vague_short_utterance(msg):
-        return "我可能會誤解你的指涉內容。請補一句你是指哪個主題（例如：喝水建議、專案文件、或上一句回覆）。"
-    return None
 
 
 def _normalize_generated_chat_title(raw: str) -> str:
@@ -720,9 +604,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
         elif req.llm_mode == "nvidia":
             local_reply = None
         else:
-            local_reply = _simple_local_reply(msg)
-            if local_reply is None:
-                local_reply = _vague_short_clarify_reply(msg)
+            local_reply = await asyncio.to_thread(local_quick_reply, msg, list(hist))
+            if local_reply is None and _is_vague_short_utterance(msg):
+                local_reply = "我可能會誤解你的指涉內容。請補一句你是指哪個主題（例如：喝水建議、專案文件、或上一句回覆）。"
         used_local_reply = local_reply is not None
         if used_local_reply:
             reply = local_reply
@@ -861,9 +745,9 @@ async def _resolve_session(
         elif llm_mode == "nvidia":
             local_reply = None
         else:
-            local_reply = _simple_local_reply(msg)
-            if local_reply is None:
-                local_reply = _vague_short_clarify_reply(msg)
+            local_reply = await asyncio.to_thread(local_quick_reply, msg, list(hist))
+            if local_reply is None and _is_vague_short_utterance(msg):
+                local_reply = "我可能會誤解你的指涉內容。請補一句你是指哪個主題（例如：喝水建議、專案文件、或上一句回覆）。"
 
         if local_reply is not None:
             return (

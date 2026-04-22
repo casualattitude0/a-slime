@@ -36,6 +36,7 @@ _lc_classic = sys.modules["langchain_classic"]
 _lc_classic.agents = _make_stub("langchain_classic.agents")
 _lc_classic.agents.AgentExecutor = MagicMock()
 _lc_classic.agents.create_tool_calling_agent = MagicMock()
+_lc_classic.agents.create_react_agent = MagicMock()
 sys.modules["langchain_classic.agents"] = _lc_classic.agents
 
 _lc_cv = sys.modules["langchain_community.vectorstores"]
@@ -104,10 +105,10 @@ class TestSystemPromptHasToolCallProhibition(unittest.TestCase):
         section = agent.build_executor.__code__.co_consts
         # Rebuild the prompt string via the same logic used at runtime
         with (
-            patch("src.agent._make_llm", return_value=MagicMock()),
-            patch("src.agent.Chroma") as mock_chroma,
-            patch("src.agent.GoogleGenerativeAIEmbeddings", return_value=MagicMock()),
-            patch("src.agent.run_ingest" if hasattr(agent, "run_ingest") else "src.agent._has_supported_data_files", return_value=False),
+            patch("src.agent.builder.default_chat_model_from_env", return_value=MagicMock()),
+            patch("src.agent.builder.Chroma") as mock_chroma,
+            patch("src.agent.builder.GoogleGenerativeAIEmbeddings", return_value=MagicMock()),
+            patch("src.agent.builder.has_supported_data_files", return_value=False),
             patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}),
         ):
             mock_col = MagicMock()
@@ -121,7 +122,7 @@ class TestSystemPromptHasToolCallProhibition(unittest.TestCase):
             # which is defined locally in build_executor; inspect source instead.
             pass
 
-        src_text = Path(__file__).parents[1] / "src" / "agent.py"
+        src_text = Path(__file__).parents[1] / "src" / "agent" / "prompts.py"
         content = src_text.read_text(encoding="utf-8")
         self.assertIn("嚴禁在回覆文字中以任何形式輸出工具呼叫語法", content)
         self.assertIn("{{save_to_memory", content.split("嚴禁在回覆文字中以任何形式輸出工具呼叫語法")[1][:200])
