@@ -200,14 +200,14 @@ export const useChatStore = defineStore('chat', () => {
     return { done: false }
   }
 
-  async function _sendSSE(text: string, llmMode: LLMMode) {
+  async function _sendSSE(text: string, llmMode: LLMMode, systemInstruction?: string) {
     activeController.value = new AbortController()
     try {
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: activeController.value.signal,
-        body: JSON.stringify({ message: text, session_id: sessionId.value, llm_mode: llmMode }),
+        body: JSON.stringify({ message: text, session_id: sessionId.value, llm_mode: llmMode, system_instruction: systemInstruction || null }),
       })
 
       if (!res.ok) {
@@ -261,7 +261,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function _sendWS(text: string, llmMode: LLMMode) {
+  async function _sendWS(text: string, llmMode: LLMMode, systemInstruction?: string) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${location.host}/ws/chat/live`
 
@@ -270,7 +270,7 @@ export const useChatStore = defineStore('chat', () => {
       _activeWs = ws
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ message: text, session_id: sessionId.value, llm_mode: llmMode }))
+        ws.send(JSON.stringify({ message: text, session_id: sessionId.value, llm_mode: llmMode, system_instruction: systemInstruction || null }))
       }
 
       ws.onmessage = (ev) => {
@@ -298,7 +298,7 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  async function sendMessage(text: string, llmMode: LLMMode = 'auto') {
+  async function sendMessage(text: string, llmMode: LLMMode = 'auto', systemInstruction?: string) {
     if (!text.trim() || isLoading.value) return
 
     messages.value.push({ role: 'user', text })
@@ -310,9 +310,9 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       if (transport.value === 'ws' && typeof WebSocket !== 'undefined') {
-        await _sendWS(text, llmMode)
+        await _sendWS(text, llmMode, systemInstruction)
       } else {
-        await _sendSSE(text, llmMode)
+        await _sendSSE(text, llmMode, systemInstruction)
       }
     } finally {
       if (streamingBotIndex.value >= 0) {

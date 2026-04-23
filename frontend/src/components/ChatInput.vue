@@ -11,7 +11,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent' }): void
+  (e: 'send', payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent'; systemInstruction?: string }): void
   (e: 'terminate'): void
 }>()
 
@@ -25,11 +25,13 @@ const isComposingWithIME = ref(false)
 const llmModeStorageKey = 'chat_input_llm_mode'
 const showAgentModes = ref(false)
 const selectedAgentMode = ref<string | null>(null)
+const selectedSystemInstruction = ref<string | undefined>(undefined)
 
 const selectAgentMode = (index: number) => {
   const prompt = QUICK_PROMPTS[index]
   input.value = prompt.text
   selectedAgentMode.value = prompt.label
+  selectedSystemInstruction.value = prompt.systemInstruction
   showAgentModes.value = false
   nextTick(() => {
     adjustHeight()
@@ -40,6 +42,7 @@ const selectAgentMode = (index: number) => {
 watch(input, (newVal) => {
   if (!newVal.trim()) {
     selectedAgentMode.value = null
+    selectedSystemInstruction.value = undefined
   }
 })
 
@@ -71,8 +74,11 @@ const handleCompositionEnd = () => { isComposingWithIME.value = false }
 const send = () => {
   const text = input.value.trim()
   if (!text || props.disabled) return
-  emit('send', { text, llmMode: llmMode.value })
+  const systemInstruction = selectedSystemInstruction.value
+  emit('send', { text, llmMode: llmMode.value, systemInstruction })
   input.value = ''
+  selectedAgentMode.value = null
+  selectedSystemInstruction.value = undefined
   nextTick(() => {
     adjustHeight()
     textareaRef.value?.focus()

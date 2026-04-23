@@ -123,8 +123,8 @@ onMounted(async () => {
   }
 })
 
-const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent' }) => {
-  chatStore.sendMessage(payload.text, payload.llmMode)
+const handleSend = (payload: { text: string; llmMode: 'auto' | 'gemini' | 'nvidia' | 'agent'; systemInstruction?: string }) => {
+  chatStore.sendMessage(payload.text, payload.llmMode, payload.systemInstruction)
   focusNewestTurn()
 }
 

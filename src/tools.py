@@ -366,6 +366,124 @@ def make_reasoning_tool() -> StructuredTool:
         args_schema=AskReasoningArgs,
     )
 
+_subagent_depth_lock = Lock()
+_subagent_depth = 0
+
+
+class DelegateToSubAgentArgs(BaseModel):
+    task_description: str = Field(
+        description="Task for the sub agent to complete."
+    )
+    context: str = Field(
+        default="",
+        description="Optional context or collected notes for the sub agent.",
+    )
+    data_path: str = Field(
+        default="~/Developer/Agent/analysis_data",
+        description="Path to store collected materials and analysis output.",
+    )
+    max_depth: int = Field(
+        default=2,
+        description="Maximum nested sub-agent delegation depth (0-4).",
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "DelegateToSubAgentArgs":
+        self.task_description = (self.task_description or "").strip()
+        self.context = (self.context or "").strip()
+        self.data_path = (self.data_path or "~/Developer/Agent/analysis_data").strip()
+        if not self.task_description:
+            raise ValueError("task_description is required.")
+        self.max_depth = max(0, min(int(self.max_depth), 4))
+        return self
+
+
+def make_subagent_tool() -> StructuredTool:
+    def _delegate(
+        task_description: str,
+        context: str = "",
+        data_path: str = "~/Developer/Agent/analysis_data",
+        max_depth: int = 2,
+    ) -> str:
+        global _subagent_depth
+
+        try:
+            args = DelegateToSubAgentArgs(
+                task_description=task_description,
+                context=context,
+                data_path=data_path,
+                max_depth=max_depth,
+            )
+        except Exception as exc:
+            return f"Sub agent args invalid: {exc}"
+
+        with _subagent_depth_lock:
+            current_depth = _subagent_depth
+            if current_depth >= args.max_depth:
+                return (
+                    "Sub agent delegation skipped: max depth reached "
+                    f"({current_depth}/{args.max_depth})."
+                )
+            _subagent_depth += 1
+
+        try:
+            from src.agent.builder import build_executor
+            from src.agent.executor import invoke_executor
+            from src.agent.paths import project_root
+
+            root = project_root()
+            raw_path = Path(args.data_path).expanduser()
+            resolved_path = (root / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
+            try:
+                resolved_path.relative_to(root.resolve())
+            except ValueError:
+                return f"Sub agent data_path must stay inside project root: {root}"
+            resolved_path.mkdir(parents=True, exist_ok=True)
+
+            executor = build_executor()
+            subagent_prompt = (
+                "你是被委派的 Sub Agent。任務要求如下：\n"
+                "- 你可以在必要時繼續委派子 Agent，但不得超過系統深度限制。\n"
+                "- 目標是蒐集對問題有幫助的資料，不要加入無關內容。\n"
+                "- 優先用 execute_shell_command 在專案內搜尋（例如 rg、ls、python 腳本）。\n"
+                f"- 所有蒐集與中間結果請整理到路徑：{resolved_path}\n"
+                "- 若資料量大，請先整理重點後再分析。\n"
+                "- 最後輸出：1) 蒐集重點 2) 分析結論 3) 已寫入檔案路徑。\n\n"
+                f"委派任務：\n{args.task_description}\n\n"
+                f"補充脈絡：\n{args.context or '(none)'}\n"
+            )
+            result = invoke_executor(
+                executor,
+                {"input": subagent_prompt, "chat_history": []},
+            )
+            output = (result or {}).get("output")
+            return json.dumps(
+                {
+                    "ok": True,
+                    "depth": current_depth + 1,
+                    "data_path": str(resolved_path),
+                    "result": output if isinstance(output, str) else str(output or ""),
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        finally:
+            with _subagent_depth_lock:
+                _subagent_depth = max(0, _subagent_depth - 1)
+
+    return StructuredTool.from_function(
+        name="delegate_to_subagent",
+        description=(
+            "Delegate a research/analysis task to a sub agent. "
+            "Use this when the task benefits from parallel decomposition, "
+            "iterative data collection, or deeper synthesis. "
+            "Provide task_description, optional context, and data_path for artifact storage."
+        ),
+        func=_delegate,
+        args_schema=DelegateToSubAgentArgs,
+    )
+
 class ShellCommandArgs(BaseModel):
     command: str = Field(description="Shell command to execute locally")
 

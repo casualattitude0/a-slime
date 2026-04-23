@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
@@ -302,6 +302,7 @@ class ChatRequest(BaseModel):
     message: str = Field(default="")
     session_id: str | None = None
     llm_mode: Literal["auto", "gemini", "agent", "nvidia"] = "auto"
+    system_instruction: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -693,6 +694,7 @@ async def _resolve_session(
     req_session_id: str | None,
     msg: str,
     llm_mode: Literal["auto", "gemini", "agent", "nvidia"] = "auto",
+    system_instruction: str | None = None,
 ) -> tuple[str, list[BaseMessage], Any, dict[str, Any] | None, threading.Event]:
     """Resolve (or create) a session and return the objects needed for streaming.
 
@@ -762,6 +764,8 @@ async def _resolve_session(
             )
 
         history_for_prompt = list(hist)
+        if system_instruction:
+            history_for_prompt = history_for_prompt + [SystemMessage(content=system_instruction)]
         executor = _get_executor_for_llm_mode(
             app, version.version_id, msg, len(hist), llm_mode
         )
@@ -933,7 +937,7 @@ async def chat_stream(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Empty message")
 
     sid, _hist, executor, payload, cancel_event = await _resolve_session(
-        app, req.session_id, msg, req.llm_mode
+        app, req.session_id, msg, req.llm_mode, req.system_instruction
     )
 
     # Fast local reply path.
@@ -1035,10 +1039,11 @@ async def ws_chat_live(websocket: WebSocket):
             llm_mode = data.get("llm_mode")
             if llm_mode not in ("auto", "gemini", "agent", "nvidia"):
                 llm_mode = "auto"
+            ws_system_instruction: str | None = data.get("system_instruction") or None
 
             try:
                 sid, _hist, executor, payload, cancel_event = await _resolve_session(
-                    app, req_session_id, msg, llm_mode
+                    app, req_session_id, msg, llm_mode, ws_system_instruction
                 )
             except Exception as exc:
                 await websocket.send_text(

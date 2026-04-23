@@ -41,7 +41,13 @@ def format_chat_history_as_text(history: Any) -> str:
             content = " ".join(
                 p.get("text", "") if isinstance(p, dict) else str(p) for p in content
             )
-        label = "Assistant" if "ai" in role.lower() else "User"
+        role_lower = role.lower()
+        if "system" in role_lower:
+            label = "System"
+        elif "ai" in role_lower:
+            label = "Assistant"
+        else:
+            label = "User"
         if str(content).strip():
             lines.append(f"{label}: {content}")
     return "\n".join(lines)

@@ -20,6 +20,7 @@ from src.tools import (
     make_memory_tools,
     make_reasoning_tool,
     make_shell_tool,
+    make_subagent_tool,
     make_web_fetch_tool,
     make_web_search_tool,
 )
@@ -71,6 +72,7 @@ def build_tool_list(
     shell_tool = make_shell_tool()
     memory_tools = make_memory_tools(chroma_path, embeddings, collection_name=memory_collection)
     reasoning_tool = make_reasoning_tool()
+    subagent_tool = make_subagent_tool()
     calendar_create_tool = make_calendar_tool(
         chroma_dir=Path(chroma_path),
         embeddings=embeddings,
@@ -105,6 +107,7 @@ def build_tool_list(
         *([make_local_datetime_tool()] if include_local_datetime else []),
         shell_tool,
         reasoning_tool,
+        subagent_tool,
         retriever_tool,
         calendar_create_tool,
         calendar_update_tool,

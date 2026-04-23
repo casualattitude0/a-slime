@@ -154,6 +154,7 @@ def build_tool_guidance(*, is_nvidia: bool) -> str:
         f"{nvidia_tool_line}"
         "- execute_shell_command：執行本機 Shell 指令（如 date、grep、tail、ls）以獲取系統時間、讀取日誌或抓取特定資料。\n"
         "- ask_reasoning_model：將複雜、多步驟的分析或綜整委派給更強的推理模型，並明確附上問題與已蒐集脈絡。\n"
+        "- delegate_to_subagent：把資料蒐集/分析任務委派給 Sub Agent；可指定 data_path 儲存中間資料與分析結果，必要時允許再委派子 Agent。\n"
         "- document_search：搜尋已匯入向量資料庫的本機文件；當使用者提到 @data 或詢問本機匯入內容時優先使用。\n\n"
         "- calendar_create_event：新增 Google 行事曆事件。\n"
         "- calendar_update_event：修改既有 Google 行事曆事件（標題、時間、描述）。\n"
@@ -178,6 +179,7 @@ def build_tool_guidance(*, is_nvidia: bool) -> str:
         "5. 回覆內容：僅引用實際使用到的來源，且禁止捏造引用；必要時可用 save_to_memory 保存可持續利用的結論。\n"
         "6. 表達限制：禁止輸出角色動作舞台描述（例如 [核心光點微微閃爍]、【冒泡】）；僅輸出正常敘述文字。\n"
         "7. 工具呼叫限制：嚴禁在回覆文字中以任何形式輸出工具呼叫語法（例如 {{save_to_memory(...)}}、save_to_memory(content=...)）。工具只能透過系統工具呼叫介面執行，絕不可用文字呈現。\n"
+        "8. 分析任務流程：若使用者要求分析模式或多步驟資料統整，先用 execute_shell_command 在專案內蒐集有幫助的資料，將素材整理到 data_path（預設 ~/Developer/Agent/analysis_data），再視需要呼叫 delegate_to_subagent 進行進一步分工分析。\n"
         "禁止捏造引用。若輸入中出現嵌入的本機文件（[Embedded local documents — ...]），視為可選參考資料。"
     )
 
