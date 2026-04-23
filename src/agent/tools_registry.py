@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -73,9 +74,17 @@ def build_tool_list(
     calendar_create_tool = make_calendar_tool()
     calendar_update_tool = make_calendar_update_tool()
     calendar_delete_tool = make_calendar_delete_tool()
-    mac_calendar_create_tool = make_mac_calendar_create_tool()
+    mac_calendar_create_tool = make_mac_calendar_create_tool(
+        chroma_dir=Path(chroma_path),
+        embeddings=embeddings,
+        memory_collection=memory_collection,
+    )
     mac_calendar_update_tool = make_mac_calendar_update_tool()
-    mac_calendar_delete_tool = make_mac_calendar_delete_tool()
+    mac_calendar_delete_tool = make_mac_calendar_delete_tool(
+        chroma_dir=Path(chroma_path),
+        embeddings=embeddings,
+        memory_collection=memory_collection,
+    )
 
     tools: list[Any] = [
         *memory_tools,

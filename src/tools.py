@@ -26,12 +26,10 @@ _ReminderSink = Callable[[dict[str, Any]], None]
 _reminder_sink_lock = Lock()
 _reminder_sink: _ReminderSink | None = None
 
-
 def set_reminder_sink(sink: _ReminderSink | None) -> None:
     global _reminder_sink
     with _reminder_sink_lock:
         _reminder_sink = sink
-
 
 def _emit_reminder(payload: dict[str, Any]) -> None:
     with _reminder_sink_lock:
@@ -42,7 +40,6 @@ def _emit_reminder(payload: dict[str, Any]) -> None:
         sink(payload)
     except Exception:
         return
-
 
 def _memory_store_for(
     chroma_dir: Path,
@@ -55,7 +52,6 @@ def _memory_store_for(
         embedding_function=embeddings,
         collection_name=collection_name,
     )
-
 
 def list_memory_items(
     chroma_dir: Path,
@@ -81,7 +77,6 @@ def list_memory_items(
     except Exception as exc:
         return [{"error": str(exc)}]
 
-
 def delete_memory_item(
     chroma_dir: Path,
     embeddings: GoogleGenerativeAIEmbeddings,
@@ -94,7 +89,6 @@ def delete_memory_item(
         return True
     except Exception:
         return False
-
 
 def delete_all_memory_items(
     chroma_dir: Path,
@@ -111,11 +105,9 @@ def delete_all_memory_items(
     except Exception:
         return False
 
-
 class WebSearchArgs(BaseModel):
     query: str = Field(description="Web search query")
     max_results: int = Field(default=5, description="Max results (1-10)")
-
 
 def _run_web_search(query: str, max_results: int = 5) -> str:
     q = (query or "").strip()
@@ -141,7 +133,6 @@ def _run_web_search(query: str, max_results: int = 5) -> str:
         return f"Web search failed: {exc}"
     return "\n\n".join(rows) if rows else "No results."
 
-
 def make_web_search_tool() -> StructuredTool:
     return StructuredTool.from_function(
         name="web_search",
@@ -154,10 +145,8 @@ def make_web_search_tool() -> StructuredTool:
         args_schema=WebSearchArgs,
     )
 
-
 class WebFetchArgs(BaseModel):
     url: str = Field(description="Absolute http(s) URL to fetch")
-
 
 def _run_web_fetch(url: str) -> str:
     u = (url or "").strip()
@@ -188,7 +177,6 @@ def _run_web_fetch(url: str) -> str:
         text = text[:12000] + "\n... [truncated]"
     return text or "Empty response."
 
-
 def make_web_fetch_tool() -> StructuredTool:
     return StructuredTool.from_function(
         name="web_fetch",
@@ -200,7 +188,6 @@ def make_web_fetch_tool() -> StructuredTool:
         args_schema=WebFetchArgs,
     )
 
-
 def _memory_store(
     chroma_dir: Path,
     embeddings: GoogleGenerativeAIEmbeddings,
@@ -208,16 +195,59 @@ def _memory_store(
 ) -> Chroma:
     return _memory_store_for(chroma_dir, embeddings, collection_name)
 
+def _delete_memory_entries_for_calendar_event(
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str,
+    apple_calendar_id: str,
+) -> int:
+    """Remove memory entries that reference apple_calendar_id. Returns count deleted."""
+    if not apple_calendar_id:
+        return 0
+    try:
+        store = _memory_store_for(chroma_dir, embeddings, collection_name)
+        result = store._collection.get(include=["documents"])
+        ids = result.get("ids") or []
+        docs = result.get("documents") or []
+        to_delete = [
+            mid for mid, doc in zip(ids, docs)
+            if apple_calendar_id in (doc or "")
+        ]
+        if to_delete:
+            store._collection.delete(ids=to_delete)
+        return len(to_delete)
+    except Exception:
+        return 0
+
+def _persist_memory_line(
+    chroma_dir: Path,
+    embeddings: GoogleGenerativeAIEmbeddings,
+    collection_name: str,
+    content: str,
+    tags: str,
+) -> str | None:
+    c = (content or "").strip()
+    if not c:
+        return None
+    meta: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "tags": (tags or "").strip(),
+    }
+    mem_id = f"mem-{uuid.uuid4()}"
+    try:
+        store = _memory_store(chroma_dir, embeddings, collection_name)
+        store.add_texts(texts=[c], metadatas=[meta], ids=[mem_id])
+    except Exception:
+        return None
+    return mem_id
 
 class SaveMemoryArgs(BaseModel):
     content: str = Field(description="Fact or note to store for future recall")
     tags: str = Field(default="", description="Optional comma-separated tags")
 
-
 class SearchMemoryArgs(BaseModel):
     query: str = Field(description="Question or keywords to search remembered facts")
     k: int = Field(default=5, description="Max number of results (1-10)")
-
 
 def make_memory_tools(
     chroma_dir: Path,
@@ -284,13 +314,11 @@ def make_memory_tools(
     )
     return [save_tool, search_tool]
 
-
 class AskReasoningArgs(BaseModel):
     question: str = Field(
         description="Complex question or task to delegate to a reasoning LLM"
     )
     context: str = Field(default="", description="Optional background information")
-
 
 def make_reasoning_tool() -> StructuredTool:
     def _ask(question: str, context: str = "") -> str:
@@ -338,10 +366,8 @@ def make_reasoning_tool() -> StructuredTool:
         args_schema=AskReasoningArgs,
     )
 
-
 class ShellCommandArgs(BaseModel):
     command: str = Field(description="Shell command to execute locally")
-
 
 def _run_shell_command(command: str) -> str:
     cmd = (command or "").strip()
@@ -379,7 +405,6 @@ def _run_shell_command(command: str) -> str:
         text = text[:10000] + "\n\n... [truncated]"
     return text
 
-
 def make_shell_tool() -> StructuredTool:
     return StructuredTool.from_function(
         name="execute_shell_command",
@@ -391,7 +416,6 @@ def make_shell_tool() -> StructuredTool:
         args_schema=ShellCommandArgs,
     )
 
-
 def _get_local_datetime() -> str:
     now = datetime.now().astimezone()
     tz = now.tzname() or ""
@@ -401,7 +425,6 @@ def _get_local_datetime() -> str:
         f"local_clock: {now.strftime('%H:%M:%S')}\n"
         f"timezone_label: {tz}"
     )
-
 
 def make_local_datetime_tool() -> StructuredTool:
     return StructuredTool.from_function(
@@ -414,11 +437,9 @@ def make_local_datetime_tool() -> StructuredTool:
         func=_get_local_datetime,
     )
 
-
 _ISO_DT_PATTERN = re.compile(
     r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
 )
-
 
 def _extract_two_iso_datetimes(text: str) -> tuple[str | None, str | None]:
     matches = list(_ISO_DT_PATTERN.finditer(text))
@@ -426,13 +447,11 @@ def _extract_two_iso_datetimes(text: str) -> tuple[str | None, str | None]:
         return matches[0].group(0), matches[1].group(0)
     return None, None
 
-
 _LOOSE_CAL_KV_RE = re.compile(
     r'"(start_at|end_at|startAt|endAt|begin_at|title|timezone|description|reminder_message|'
     r"source_session_id|event_id)"
     r'"\s*:\s*"((?:[^"\\]|\\.)*)"',
 )
-
 
 def _unescape_json_string_fragment(s: str) -> str:
     return (
@@ -441,7 +460,6 @@ def _unescape_json_string_fragment(s: str) -> str:
         .replace('\\"', '"')
         .replace("\\\\", "\\")
     )
-
 
 def _calendar_fields_from_jsonish_blob(blob: str) -> dict[str, Any]:
     """Strict json.loads, else quoted key/value pairs (handles truncated invalid JSON)."""
@@ -459,7 +477,6 @@ def _calendar_fields_from_jsonish_blob(blob: str) -> dict[str, Any]:
     for m in _LOOSE_CAL_KV_RE.finditer(s):
         loose[m.group(1)] = _unescape_json_string_fragment(m.group(2))
     return loose
-
 
 def _normalize_calendar_create_top_level_keys(data: dict[str, Any]) -> dict[str, Any]:
     """ReAct / models often send camelCase; LangChain may also bind the whole JSON into one field."""
@@ -480,7 +497,6 @@ def _normalize_calendar_create_top_level_keys(data: dict[str, Any]) -> dict[str,
                     out[dst] = s
                     break
     return out
-
 
 def _merge_calendar_create_nested(data: dict[str, Any]) -> dict[str, Any]:
     """Fill start_at/end_at/title from nested JSON wrongly passed as title only."""
@@ -534,7 +550,6 @@ def _merge_calendar_create_nested(data: dict[str, Any]) -> dict[str, Any]:
             out["end_at"] = de
     return out
 
-
 def _merge_calendar_update_nested(data: dict[str, Any]) -> dict[str, Any]:
     """Unpack JSON wrongly placed in event_id (or title) for update tool."""
     out = dict(data)
@@ -566,7 +581,6 @@ def _merge_calendar_update_nested(data: dict[str, Any]) -> dict[str, Any]:
                     out[dst] = v.strip()
     return out
 
-
 class CalendarCreateEventArgs(BaseModel):
     title: str = Field(description="Event title")
     start_at: str = Field(default="", description="Event start datetime in ISO-8601")
@@ -595,7 +609,6 @@ class CalendarCreateEventArgs(BaseModel):
             return {"title": str(data)}
         return _merge_calendar_create_nested(data)
 
-
 class CalendarUpdateEventArgs(BaseModel):
     event_id: str = Field(description="Google Calendar event id")
     title: str = Field(default="", description="Event title")
@@ -611,10 +624,8 @@ class CalendarUpdateEventArgs(BaseModel):
             return data
         return _merge_calendar_update_nested(data)
 
-
 class CalendarDeleteEventArgs(BaseModel):
     event_id: str = Field(description="Google Calendar event id")
-
 
 def _normalize_iso_datetime(raw: str, timezone_name: str) -> datetime:
     s = (raw or "").strip()
@@ -629,13 +640,10 @@ def _normalize_iso_datetime(raw: str, timezone_name: str) -> datetime:
         parsed = parsed.replace(tzinfo=tz)
     return parsed.astimezone(tz)
 
-
 _GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-
 
 def _calendar_project_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
 
 def _resolve_google_calendar_access_token() -> str:
     """Prefer OAuth token cache (refreshable); fall back to GOOGLE_CALENDAR_ACCESS_TOKEN."""
@@ -672,7 +680,6 @@ def _resolve_google_calendar_access_token() -> str:
         "GOOGLE_OAUTH_TOKEN_CACHE_FILE)."
     )
 
-
 def _raise_for_calendar_status(resp: httpx.Response, context: str) -> None:
     try:
         resp.raise_for_status()
@@ -687,7 +694,6 @@ def _raise_for_calendar_status(resp: httpx.Response, context: str) -> None:
                 "for automatic refresh."
             )
         raise RuntimeError(f"{context}: HTTP {exc.response.status_code}.{hint}\n{body}") from exc
-
 
 def _create_google_calendar_event(
     *,
@@ -716,13 +722,11 @@ def _create_google_calendar_event(
         data = resp.json()
     return {"id": data.get("id", ""), "html_link": data.get("htmlLink", "")}
 
-
 def _google_calendar_headers() -> tuple[str, dict[str, str]]:
     token = _resolve_google_calendar_access_token()
     calendar_id = (os.environ.get("GOOGLE_CALENDAR_ID") or "primary").strip() or "primary"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     return calendar_id, headers
-
 
 def _update_google_calendar_event(
     *,
@@ -758,7 +762,6 @@ def _update_google_calendar_event(
         data = resp.json()
     return {"id": data.get("id", ""), "html_link": data.get("htmlLink", "")}
 
-
 def _delete_google_calendar_event(*, event_id: str) -> None:
     event_id_clean = (event_id or "").strip()
     if not event_id_clean:
@@ -771,7 +774,6 @@ def _delete_google_calendar_event(*, event_id: str) -> None:
     with httpx.Client(timeout=20.0) as client:
         resp = client.delete(url, headers=headers)
         _raise_for_calendar_status(resp, "Google Calendar delete event")
-
 
 def make_calendar_tool() -> StructuredTool:
     def _create_event(
@@ -917,7 +919,6 @@ def make_calendar_tool() -> StructuredTool:
         args_schema=CalendarCreateEventArgs,
     )
 
-
 def make_calendar_update_tool() -> StructuredTool:
     def _update_event(
         event_id: str,
@@ -963,7 +964,6 @@ def make_calendar_update_tool() -> StructuredTool:
         args_schema=CalendarUpdateEventArgs,
     )
 
-
 def make_calendar_delete_tool() -> StructuredTool:
     def _delete_event(event_id: str) -> str:
         try:
@@ -979,19 +979,15 @@ def make_calendar_delete_tool() -> StructuredTool:
         args_schema=CalendarDeleteEventArgs,
     )
 
-
 def _mac_calendar_supported() -> bool:
     return platform.system() == "Darwin"
-
 
 def _escape_applescript_string(s: str) -> str:
     return (s or "").replace("\\", "\\\\").replace('"', '\\"')
 
-
 def _sanitize_calendar_text_for_applescript(s: str) -> str:
     """Single-line AppleScript string literals; collapse whitespace/newlines."""
     return " ".join((s or "").split())
-
 
 def _datetime_to_mac_local(dt: datetime, timezone_name: str) -> datetime:
     tz_name = (timezone_name or "Asia/Taipei").strip() or "Asia/Taipei"
@@ -999,7 +995,6 @@ def _datetime_to_mac_local(dt: datetime, timezone_name: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=tz)
     return dt.astimezone(tz)
-
 
 def _applescript_assign_date(var_name: str, dt: datetime) -> str:
     return (
@@ -1012,6 +1007,13 @@ def _applescript_assign_date(var_name: str, dt: datetime) -> str:
         f"set seconds of {var_name} to {dt.second}\n"
     )
 
+def _applescript_indent_block(block: str, prefix: str) -> str:
+    lines: list[str] = []
+    for raw in block.splitlines():
+        line = raw.strip()
+        if line:
+            lines.append(prefix + line)
+    return ("\n".join(lines) + "\n") if lines else ""
 
 def _run_applescript(script: str) -> str:
     result = subprocess.run(
@@ -1024,8 +1026,8 @@ def _run_applescript(script: str) -> str:
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(err or f"osascript failed with exit {result.returncode}")
-    return (result.stdout or "").strip()
-
+    out = (result.stdout or "").strip()
+    return out
 
 def _create_mac_calendar_event(
     *,
@@ -1035,7 +1037,7 @@ def _create_mac_calendar_event(
     timezone_name: str,
     description: str,
     alert_minutes_before: int = 0,
-) -> None:
+) -> str:
     title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(title))
     desc_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(description))
     start_local = _datetime_to_mac_local(start_at, timezone_name)
@@ -1061,22 +1063,36 @@ def _create_mac_calendar_event(
             "    end tell\n"
         )
     script += (
+        "    get uid of newEvent\n"
         "  end tell\n"
         "end tell\n"
     )
-    _run_applescript(script)
-
+    uid = _run_applescript(script).strip()
+    if not uid:
+        raise RuntimeError("Calendar returned empty event uid")
+    return uid
 
 def _update_mac_calendar_event(
     *,
-    match_title: str,
+    match_title: str = "",
+    match_uid: str = "",
     new_title: str,
     start_at: datetime | None,
     end_at: datetime | None,
     timezone_name: str,
     description: str | None,
+    alert_minutes_before: int | None = None,
 ) -> None:
-    match_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(match_title))
+    uid = (match_uid or "").strip()
+    by_uid = bool(uid)
+    if by_uid:
+        match_esc = _escape_applescript_string(uid)
+        whose = "every event whose uid is matchKey"
+    else:
+        match_esc = _escape_applescript_string(
+            _sanitize_calendar_text_for_applescript(match_title)
+        )
+        whose = "every event whose summary is matchKey"
     new_title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(new_title))
     desc_esc = (
         None
@@ -1084,53 +1100,80 @@ def _update_mac_calendar_event(
         else _escape_applescript_string(_sanitize_calendar_text_for_applescript(description))
     )
 
-    inner = ""
-    if new_title.strip():
-        inner += f'    set summary of evt to "{new_title_esc}"\n'
+    date_setup = ""
     if start_at is not None:
         sl = _datetime_to_mac_local(start_at, timezone_name)
-        inner += _applescript_assign_date("newStart", sl)
-        inner += "    set start date of evt to newStart\n"
+        date_setup += _applescript_indent_block(_applescript_assign_date("newStart", sl), "  ")
     if end_at is not None:
         el = _datetime_to_mac_local(end_at, timezone_name)
-        inner += _applescript_assign_date("newEnd", el)
-        inner += "    set end date of evt to newEnd\n"
+        date_setup += _applescript_indent_block(_applescript_assign_date("newEnd", el), "  ")
+
+    # Mutations run inside tell aCal → tell (item 1 of evList) so event refs stay valid (Calendar.app quirk).
+    inner_evt = ""
+    if new_title.strip():
+        inner_evt += f'        set summary to "{new_title_esc}"\n'
+    if start_at is not None:
+        inner_evt += "        set start date to newStart\n"
+    if end_at is not None:
+        inner_evt += "        set end date to newEnd\n"
     if description is not None:
-        inner += f'    set description of evt to "{desc_esc}"\n'
+        inner_evt += f'        set description to "{desc_esc}"\n'
+    if alert_minutes_before is not None:
+        inner_evt += "        delete every display alarm\n"
+        if alert_minutes_before > 0:
+            inner_evt += (
+                "        make new display alarm at end with properties "
+                f"{{trigger interval:-{alert_minutes_before}}}\n"
+            )
 
     script = (
         'tell application "Calendar"\n'
-        "  set targetCalendar to first calendar whose writable is true\n"
-        "  tell targetCalendar\n"
-        "    repeat with evt in events\n"
-        f'      if summary of evt is "{match_esc}" then\n'
-        f"{inner}"
+        f'  set matchKey to "{match_esc}"\n'
+        f"{date_setup}"
+        "  set didMutate to false\n"
+        "  repeat with aCal in (every calendar whose writable is true)\n"
+        "    tell aCal\n"
+        f"      set evList to {whose}\n"
+        "      if (count of evList) > 0 then\n"
+        "        tell (item 1 of evList)\n"
+        f"{inner_evt}"
+        "        end tell\n"
+        "        set didMutate to true\n"
         "        exit repeat\n"
         "      end if\n"
-        "    end repeat\n"
-        "  end tell\n"
+        "    end tell\n"
+        "  end repeat\n"
+        '  if didMutate is false then error "No matching event on any writable calendar."\n'
         "end tell\n"
     )
     _run_applescript(script)
 
-
-def _delete_mac_calendar_event(*, title: str) -> None:
-    title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(title))
+def _delete_mac_calendar_event(*, title: str = "", match_uid: str = "") -> None:
+    uid = (match_uid or "").strip()
+    by_uid = bool(uid)
+    if by_uid:
+        key_esc = _escape_applescript_string(uid)
+        whose_cond = "uid is matchKey"
+    else:
+        key_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(title))
+        whose_cond = "summary is matchKey"
     script = (
         'tell application "Calendar"\n'
-        "  set targetCalendar to first calendar whose writable is true\n"
-        "  tell targetCalendar\n"
-        "    repeat with evt in events\n"
-        f'      if summary of evt is "{title_esc}" then\n'
-        "        delete evt\n"
-        "        exit repeat\n"
-        "      end if\n"
-        "    end repeat\n"
-        "  end tell\n"
+        f'  set matchKey to "{key_esc}"\n'
+        "  set didDel to false\n"
+        "  set allCals to every calendar whose writable is true\n"
+        "  repeat with aCal in allCals\n"
+        f"    set evList to (every event of aCal whose {whose_cond})\n"
+        "    if (count of evList) > 0 then\n"
+        "      tell aCal to delete (item 1 of evList)\n"
+        "      set didDel to true\n"
+        "    end if\n"
+        "    if didDel then exit repeat\n"
+        "  end repeat\n"
+        '  if didDel is false then error "No matching event on any writable calendar."\n'
         "end tell\n"
     )
     _run_applescript(script)
-
 
 class MacCalendarCreateEventArgs(BaseModel):
     title: str = Field(description="Event title")
@@ -1140,9 +1183,15 @@ class MacCalendarCreateEventArgs(BaseModel):
     description: str = Field(default="", description="Event notes")
     alert_minutes_before: int = Field(default=0, description="Minutes before the event to trigger an alert (0 for no alert)")
 
-
 class MacCalendarUpdateEventArgs(BaseModel):
-    match_title: str = Field(description="Current event title to find (exact match, first hit)")
+    match_title: str = Field(
+        default="",
+        description="Current event title (exact match, first hit). Omit if apple_calendar_id is set.",
+    )
+    apple_calendar_id: str = Field(
+        default="",
+        description="Calendar event uid from mac_calendar_create_event; preferred over match_title.",
+    )
     new_title: str = Field(default="", description="New title, if changing")
     start_at: str = Field(default="", description="New start datetime ISO-8601, if changing")
     end_at: str = Field(default="", description="New end datetime ISO-8601, if changing")
@@ -1150,18 +1199,29 @@ class MacCalendarUpdateEventArgs(BaseModel):
     description: str = Field(default="", description="New notes; omit fields you do not change")
     alert_minutes_before: int | None = Field(default=None, description="New alert time in minutes before event, if changing (0 to remove)")
 
-
 class MacCalendarDeleteEventArgs(BaseModel):
-    title: str = Field(description="Event title to delete (exact match, first hit)")
+    title: str = Field(
+        default="",
+        description="Event title to delete (exact match). Omit if apple_calendar_id is set.",
+    )
+    apple_calendar_id: str = Field(
+        default="",
+        description="Event uid from mac_calendar_create_event; preferred over title.",
+    )
 
-
-def make_mac_calendar_create_tool() -> StructuredTool:
+def make_mac_calendar_create_tool(
+    *,
+    chroma_dir: Path | None = None,
+    embeddings: GoogleGenerativeAIEmbeddings | None = None,
+    memory_collection: str | None = None,
+) -> StructuredTool:
     def _create(
         title: str,
         start_at: str,
         end_at: str,
         timezone: str = "Asia/Taipei",
         description: str = "",
+        alert_minutes_before: int = 0,
     ) -> str:
         if not _mac_calendar_supported():
             return json.dumps(
@@ -1188,37 +1248,67 @@ def make_mac_calendar_create_tool() -> StructuredTool:
         if end_dt <= start_dt:
             return json.dumps({"ok": False, "error": "end_at must be after start_at"}, ensure_ascii=False)
         try:
-            _create_mac_calendar_event(
+            apple_calendar_id = _create_mac_calendar_event(
                 title=t,
                 start_at=start_dt,
                 end_at=end_dt,
                 timezone_name=tz_name,
                 description=desc,
+                alert_minutes_before=alert_minutes_before,
             )
         except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
-        return json.dumps({"ok": True, "calendar": "mac", "title": t}, ensure_ascii=False)
+
+        memory_item_id: str | None = None
+        if chroma_dir is not None and embeddings is not None and (memory_collection or "").strip():
+            mem_line = (
+                "Apple Calendar event created | "
+                f"apple_calendar_id={apple_calendar_id} | title={json.dumps(t, ensure_ascii=False)} | "
+                f"start_at={start_dt.isoformat()} | end_at={end_dt.isoformat()}"
+            )
+            memory_item_id = _persist_memory_line(
+                chroma_dir,
+                embeddings,
+                memory_collection.strip(),
+                mem_line,
+                "mac-calendar,apple-calendar",
+            )
+
+        return json.dumps(
+            {
+                "ok": True,
+                "calendar": "mac",
+                "title": t,
+                "apple_calendar_id": apple_calendar_id,
+                "saved_to_memory": memory_item_id is not None,
+                "memory_item_id": memory_item_id or "",
+            },
+            ensure_ascii=False,
+        )
 
     return StructuredTool.from_function(
         name="mac_calendar_create_event",
         description=(
             "Create an event in the macOS Calendar app (Apple Calendar / iCal). "
             "Runs on the Mac where the agent server executes; requires Calendar.app and Automation permission. "
-            "Uses the first writable local calendar."
+            "Uses the first writable local calendar. On success, returns apple_calendar_id (Calendar uid) and "
+            "saves that id plus title and times to persistent memory when the agent memory store is configured; "
+            "tell the user apple_calendar_id from the JSON and that memory was updated when saved_to_memory is true."
         ),
         func=_create,
         args_schema=MacCalendarCreateEventArgs,
     )
 
-
 def make_mac_calendar_update_tool() -> StructuredTool:
     def _update(
-        match_title: str,
+        match_title: str = "",
+        apple_calendar_id: str = "",
         new_title: str = "",
         start_at: str = "",
         end_at: str = "",
         timezone: str = "Asia/Taipei",
         description: str = "",
+        alert_minutes_before: int | None = None,
     ) -> str:
         if not _mac_calendar_supported():
             return json.dumps(
@@ -1226,9 +1316,13 @@ def make_mac_calendar_update_tool() -> StructuredTool:
                 ensure_ascii=False,
             )
         mt = (match_title or "").strip()
+        aid = (apple_calendar_id or "").strip()
         tz_name = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
-        if not mt:
-            return json.dumps({"ok": False, "error": "match_title is required"}, ensure_ascii=False)
+        if not mt and not aid:
+            return json.dumps(
+                {"ok": False, "error": "Provide match_title or apple_calendar_id."},
+                ensure_ascii=False,
+            )
         nt = (new_title or "").strip()
         sa = (start_at or "").strip()
         ea = (end_at or "").strip()
@@ -1253,57 +1347,85 @@ def make_mac_calendar_update_tool() -> StructuredTool:
         if desc_raw:
             desc_param = desc_raw
 
-        if not nt and start_dt is None and end_dt is None and desc_param is None:
+        if not nt and start_dt is None and end_dt is None and desc_param is None and alert_minutes_before is None:
             return json.dumps(
-                {"ok": False, "error": "provide new_title, start_at, end_at, and/or description to update"},
+                {"ok": False, "error": "provide new_title, start_at, end_at, description, or alert_minutes_before to update"},
                 ensure_ascii=False,
             )
-
         try:
             _update_mac_calendar_event(
-                match_title=mt,
+                match_title=mt if not aid else "",
+                match_uid=aid,
                 new_title=nt or mt,
                 start_at=start_dt,
                 end_at=end_dt,
                 timezone_name=tz_name,
                 description=desc_param,
+                alert_minutes_before=alert_minutes_before,
             )
         except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
-        return json.dumps({"ok": True, "calendar": "mac", "match_title": mt}, ensure_ascii=False)
+        out: dict[str, Any] = {"ok": True, "calendar": "mac", "match_title": mt}
+        if aid:
+            out["apple_calendar_id"] = aid
+        return json.dumps(out, ensure_ascii=False)
 
     return StructuredTool.from_function(
         name="mac_calendar_update_event",
         description=(
-            "Update an event in macOS Calendar by exact title match (first matching event). "
-            "Pass match_title and any of new_title, start_at, end_at (ISO-8601), or description."
+            "Update an event in macOS Calendar. Prefer apple_calendar_id from mac_calendar_create_event; "
+            "otherwise use exact match_title across all writable calendars. "
+            "Pass new_title, start_at, end_at (ISO-8601), description, and/or alert_minutes_before."
         ),
         func=_update,
         args_schema=MacCalendarUpdateEventArgs,
     )
 
-
-def make_mac_calendar_delete_tool() -> StructuredTool:
-    def _delete(title: str) -> str:
+def make_mac_calendar_delete_tool(
+    *,
+    chroma_dir: Path | None = None,
+    embeddings: GoogleGenerativeAIEmbeddings | None = None,
+    memory_collection: str | None = None,
+) -> StructuredTool:
+    def _delete(title: str = "", apple_calendar_id: str = "") -> str:
         if not _mac_calendar_supported():
             return json.dumps(
                 {"ok": False, "error": "Mac Calendar tools require macOS (Darwin)."},
                 ensure_ascii=False,
             )
         t = (title or "").strip()
-        if not t:
-            return json.dumps({"ok": False, "error": "title is required"}, ensure_ascii=False)
+        aid = (apple_calendar_id or "").strip()
+        if not t and not aid:
+            return json.dumps(
+                {"ok": False, "error": "Provide title or apple_calendar_id."},
+                ensure_ascii=False,
+            )
         try:
-            _delete_mac_calendar_event(title=t)
+            _delete_mac_calendar_event(title=t if not aid else "", match_uid=aid)
         except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
-        return json.dumps({"ok": True, "calendar": "mac", "title": t}, ensure_ascii=False)
+
+        deleted_from_memory = 0
+        if chroma_dir is not None and embeddings is not None and (memory_collection or "").strip():
+            deleted_from_memory = _delete_memory_entries_for_calendar_event(
+                chroma_dir,
+                embeddings,
+                memory_collection.strip(),
+                aid or t,
+            )
+
+        out: dict[str, Any] = {"ok": True, "calendar": "mac", "title": t}
+        if aid:
+            out["apple_calendar_id"] = aid
+        out["memory_entries_removed"] = deleted_from_memory
+        return json.dumps(out, ensure_ascii=False)
 
     return StructuredTool.from_function(
         name="mac_calendar_delete_event",
         description=(
-            "Delete an event from macOS Calendar by exact title match (first matching event). "
-            "Runs on the server Mac."
+            "Delete an event from macOS Calendar. Prefer apple_calendar_id from mac_calendar_create_event; "
+            "otherwise exact title match on any writable calendar. Runs on the server Mac. "
+            "Saves the deletion to memory if configured."
         ),
         func=_delete,
         args_schema=MacCalendarDeleteEventArgs,

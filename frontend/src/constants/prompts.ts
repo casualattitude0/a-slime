@@ -12,7 +12,7 @@ export const QUICK_PROMPTS: QuickPrompt[] = [
 - 結束時間：
 - 時區： Asia/Taipei
 - 地點：（可選）
-- 提醒：（例如 行程前 15 分鐘）
+- 提醒：行程前 60 分鐘
 - 備註：（可選）`,
   },
 ]
