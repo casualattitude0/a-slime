@@ -220,10 +220,11 @@ watch(
   font-family: inherit;
   font-size: 14px;
   line-height: 1.55;
-  min-height: 22px;
+  min-height: 32px;
   max-height: 200px;
   overflow-y: auto;
-  padding: 0;
+  padding: 5px 0;
+  box-sizing: border-box;
 }
 
 .composer-input::placeholder {

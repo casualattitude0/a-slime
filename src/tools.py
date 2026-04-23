@@ -1034,6 +1034,7 @@ def _create_mac_calendar_event(
     end_at: datetime,
     timezone_name: str,
     description: str,
+    alert_minutes_before: int = 0,
 ) -> None:
     title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(title))
     desc_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(description))
@@ -1047,11 +1048,19 @@ def _create_mac_calendar_event(
         "  tell targetCalendar\n"
         f"{start_block}"
         f"{end_block}"
-        "    make new event at end with properties {summary:\""
+        "    set newEvent to make new event at end with properties {summary:\""
         f"{title_esc}"
         '", start date:startDate, end date:endDate, description:"'
         f"{desc_esc}"
         '"}\n'
+    )
+    if alert_minutes_before > 0:
+        script += (
+            "    tell newEvent\n"
+            f"      make new display alarm at end with properties {{trigger interval:-{alert_minutes_before}}}\n"
+            "    end tell\n"
+        )
+    script += (
         "  end tell\n"
         "end tell\n"
     )
@@ -1129,6 +1138,7 @@ class MacCalendarCreateEventArgs(BaseModel):
     end_at: str = Field(description="Event end datetime in ISO-8601")
     timezone: str = Field(default="Asia/Taipei", description="IANA timezone")
     description: str = Field(default="", description="Event notes")
+    alert_minutes_before: int = Field(default=0, description="Minutes before the event to trigger an alert (0 for no alert)")
 
 
 class MacCalendarUpdateEventArgs(BaseModel):
@@ -1138,6 +1148,7 @@ class MacCalendarUpdateEventArgs(BaseModel):
     end_at: str = Field(default="", description="New end datetime ISO-8601, if changing")
     timezone: str = Field(default="Asia/Taipei", description="IANA timezone for interpreting times")
     description: str = Field(default="", description="New notes; omit fields you do not change")
+    alert_minutes_before: int | None = Field(default=None, description="New alert time in minutes before event, if changing (0 to remove)")
 
 
 class MacCalendarDeleteEventArgs(BaseModel):
