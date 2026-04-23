@@ -13,6 +13,9 @@ from src.tools import (
     make_calendar_tool,
     make_calendar_update_tool,
     make_local_datetime_tool,
+    make_mac_calendar_create_tool,
+    make_mac_calendar_delete_tool,
+    make_mac_calendar_update_tool,
     make_memory_tools,
     make_reasoning_tool,
     make_shell_tool,
@@ -70,6 +73,9 @@ def build_tool_list(
     calendar_create_tool = make_calendar_tool()
     calendar_update_tool = make_calendar_update_tool()
     calendar_delete_tool = make_calendar_delete_tool()
+    mac_calendar_create_tool = make_mac_calendar_create_tool()
+    mac_calendar_update_tool = make_mac_calendar_update_tool()
+    mac_calendar_delete_tool = make_mac_calendar_delete_tool()
 
     tools: list[Any] = [
         *memory_tools,
@@ -82,6 +88,9 @@ def build_tool_list(
         calendar_create_tool,
         calendar_update_tool,
         calendar_delete_tool,
+        mac_calendar_create_tool,
+        mac_calendar_update_tool,
+        mac_calendar_delete_tool,
     ]
     save_memory_tool = next(
         (t for t in memory_tools if getattr(t, "name", "") == "save_to_memory"),

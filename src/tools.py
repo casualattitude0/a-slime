@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import platform
 import re
 import shlex
 import subprocess
@@ -976,4 +977,323 @@ def make_calendar_delete_tool() -> StructuredTool:
         description="Delete an existing Google Calendar event by event_id.",
         func=_delete_event,
         args_schema=CalendarDeleteEventArgs,
+    )
+
+
+def _mac_calendar_supported() -> bool:
+    return platform.system() == "Darwin"
+
+
+def _escape_applescript_string(s: str) -> str:
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _sanitize_calendar_text_for_applescript(s: str) -> str:
+    """Single-line AppleScript string literals; collapse whitespace/newlines."""
+    return " ".join((s or "").split())
+
+
+def _datetime_to_mac_local(dt: datetime, timezone_name: str) -> datetime:
+    tz_name = (timezone_name or "Asia/Taipei").strip() or "Asia/Taipei"
+    tz = ZoneInfo(tz_name)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
+
+
+def _applescript_assign_date(var_name: str, dt: datetime) -> str:
+    return (
+        f"set {var_name} to current date\n"
+        f"set year of {var_name} to {dt.year}\n"
+        f"set month of {var_name} to {dt.month}\n"
+        f"set day of {var_name} to {dt.day}\n"
+        f"set hours of {var_name} to {dt.hour}\n"
+        f"set minutes of {var_name} to {dt.minute}\n"
+        f"set seconds of {var_name} to {dt.second}\n"
+    )
+
+
+def _run_applescript(script: str) -> str:
+    result = subprocess.run(
+        ["osascript", "-"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(err or f"osascript failed with exit {result.returncode}")
+    return (result.stdout or "").strip()
+
+
+def _create_mac_calendar_event(
+    *,
+    title: str,
+    start_at: datetime,
+    end_at: datetime,
+    timezone_name: str,
+    description: str,
+) -> None:
+    title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(title))
+    desc_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(description))
+    start_local = _datetime_to_mac_local(start_at, timezone_name)
+    end_local = _datetime_to_mac_local(end_at, timezone_name)
+    start_block = _applescript_assign_date("startDate", start_local)
+    end_block = _applescript_assign_date("endDate", end_local)
+    script = (
+        'tell application "Calendar"\n'
+        "  set targetCalendar to first calendar whose writable is true\n"
+        "  tell targetCalendar\n"
+        f"{start_block}"
+        f"{end_block}"
+        "    make new event at end with properties {summary:\""
+        f"{title_esc}"
+        '", start date:startDate, end date:endDate, description:"'
+        f"{desc_esc}"
+        '"}\n'
+        "  end tell\n"
+        "end tell\n"
+    )
+    _run_applescript(script)
+
+
+def _update_mac_calendar_event(
+    *,
+    match_title: str,
+    new_title: str,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    timezone_name: str,
+    description: str | None,
+) -> None:
+    match_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(match_title))
+    new_title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(new_title))
+    desc_esc = (
+        None
+        if description is None
+        else _escape_applescript_string(_sanitize_calendar_text_for_applescript(description))
+    )
+
+    inner = ""
+    if new_title.strip():
+        inner += f'    set summary of evt to "{new_title_esc}"\n'
+    if start_at is not None:
+        sl = _datetime_to_mac_local(start_at, timezone_name)
+        inner += _applescript_assign_date("newStart", sl)
+        inner += "    set start date of evt to newStart\n"
+    if end_at is not None:
+        el = _datetime_to_mac_local(end_at, timezone_name)
+        inner += _applescript_assign_date("newEnd", el)
+        inner += "    set end date of evt to newEnd\n"
+    if description is not None:
+        inner += f'    set description of evt to "{desc_esc}"\n'
+
+    script = (
+        'tell application "Calendar"\n'
+        "  set targetCalendar to first calendar whose writable is true\n"
+        "  tell targetCalendar\n"
+        "    repeat with evt in events\n"
+        f'      if summary of evt is "{match_esc}" then\n'
+        f"{inner}"
+        "        exit repeat\n"
+        "      end if\n"
+        "    end repeat\n"
+        "  end tell\n"
+        "end tell\n"
+    )
+    _run_applescript(script)
+
+
+def _delete_mac_calendar_event(*, title: str) -> None:
+    title_esc = _escape_applescript_string(_sanitize_calendar_text_for_applescript(title))
+    script = (
+        'tell application "Calendar"\n'
+        "  set targetCalendar to first calendar whose writable is true\n"
+        "  tell targetCalendar\n"
+        "    repeat with evt in events\n"
+        f'      if summary of evt is "{title_esc}" then\n'
+        "        delete evt\n"
+        "        exit repeat\n"
+        "      end if\n"
+        "    end repeat\n"
+        "  end tell\n"
+        "end tell\n"
+    )
+    _run_applescript(script)
+
+
+class MacCalendarCreateEventArgs(BaseModel):
+    title: str = Field(description="Event title")
+    start_at: str = Field(description="Event start datetime in ISO-8601")
+    end_at: str = Field(description="Event end datetime in ISO-8601")
+    timezone: str = Field(default="Asia/Taipei", description="IANA timezone")
+    description: str = Field(default="", description="Event notes")
+
+
+class MacCalendarUpdateEventArgs(BaseModel):
+    match_title: str = Field(description="Current event title to find (exact match, first hit)")
+    new_title: str = Field(default="", description="New title, if changing")
+    start_at: str = Field(default="", description="New start datetime ISO-8601, if changing")
+    end_at: str = Field(default="", description="New end datetime ISO-8601, if changing")
+    timezone: str = Field(default="Asia/Taipei", description="IANA timezone for interpreting times")
+    description: str = Field(default="", description="New notes; omit fields you do not change")
+
+
+class MacCalendarDeleteEventArgs(BaseModel):
+    title: str = Field(description="Event title to delete (exact match, first hit)")
+
+
+def make_mac_calendar_create_tool() -> StructuredTool:
+    def _create(
+        title: str,
+        start_at: str,
+        end_at: str,
+        timezone: str = "Asia/Taipei",
+        description: str = "",
+    ) -> str:
+        if not _mac_calendar_supported():
+            return json.dumps(
+                {"ok": False, "error": "Mac Calendar tools require macOS (Darwin)."},
+                ensure_ascii=False,
+            )
+        t = (title or "").strip()
+        sa = (start_at or "").strip()
+        ea = (end_at or "").strip()
+        tz_name = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
+        desc = (description or "").strip()
+        if not t:
+            return json.dumps({"ok": False, "error": "title is required"}, ensure_ascii=False)
+        if not sa or not ea:
+            return json.dumps(
+                {"ok": False, "error": "start_at and end_at are required (ISO-8601)."},
+                ensure_ascii=False,
+            )
+        try:
+            start_dt = _normalize_iso_datetime(sa, tz_name)
+            end_dt = _normalize_iso_datetime(ea, tz_name)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": f"invalid datetime: {exc}"}, ensure_ascii=False)
+        if end_dt <= start_dt:
+            return json.dumps({"ok": False, "error": "end_at must be after start_at"}, ensure_ascii=False)
+        try:
+            _create_mac_calendar_event(
+                title=t,
+                start_at=start_dt,
+                end_at=end_dt,
+                timezone_name=tz_name,
+                description=desc,
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        return json.dumps({"ok": True, "calendar": "mac", "title": t}, ensure_ascii=False)
+
+    return StructuredTool.from_function(
+        name="mac_calendar_create_event",
+        description=(
+            "Create an event in the macOS Calendar app (Apple Calendar / iCal). "
+            "Runs on the Mac where the agent server executes; requires Calendar.app and Automation permission. "
+            "Uses the first writable local calendar."
+        ),
+        func=_create,
+        args_schema=MacCalendarCreateEventArgs,
+    )
+
+
+def make_mac_calendar_update_tool() -> StructuredTool:
+    def _update(
+        match_title: str,
+        new_title: str = "",
+        start_at: str = "",
+        end_at: str = "",
+        timezone: str = "Asia/Taipei",
+        description: str = "",
+    ) -> str:
+        if not _mac_calendar_supported():
+            return json.dumps(
+                {"ok": False, "error": "Mac Calendar tools require macOS (Darwin)."},
+                ensure_ascii=False,
+            )
+        mt = (match_title or "").strip()
+        tz_name = (timezone or "Asia/Taipei").strip() or "Asia/Taipei"
+        if not mt:
+            return json.dumps({"ok": False, "error": "match_title is required"}, ensure_ascii=False)
+        nt = (new_title or "").strip()
+        sa = (start_at or "").strip()
+        ea = (end_at or "").strip()
+        desc_raw = (description or "").strip()
+
+        start_dt: datetime | None = None
+        end_dt: datetime | None = None
+        if sa:
+            try:
+                start_dt = _normalize_iso_datetime(sa, tz_name)
+            except Exception as exc:
+                return json.dumps({"ok": False, "error": f"invalid start_at: {exc}"}, ensure_ascii=False)
+        if ea:
+            try:
+                end_dt = _normalize_iso_datetime(ea, tz_name)
+            except Exception as exc:
+                return json.dumps({"ok": False, "error": f"invalid end_at: {exc}"}, ensure_ascii=False)
+        if start_dt and end_dt and end_dt <= start_dt:
+            return json.dumps({"ok": False, "error": "end_at must be after start_at"}, ensure_ascii=False)
+
+        desc_param: str | None = None
+        if desc_raw:
+            desc_param = desc_raw
+
+        if not nt and start_dt is None and end_dt is None and desc_param is None:
+            return json.dumps(
+                {"ok": False, "error": "provide new_title, start_at, end_at, and/or description to update"},
+                ensure_ascii=False,
+            )
+
+        try:
+            _update_mac_calendar_event(
+                match_title=mt,
+                new_title=nt or mt,
+                start_at=start_dt,
+                end_at=end_dt,
+                timezone_name=tz_name,
+                description=desc_param,
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        return json.dumps({"ok": True, "calendar": "mac", "match_title": mt}, ensure_ascii=False)
+
+    return StructuredTool.from_function(
+        name="mac_calendar_update_event",
+        description=(
+            "Update an event in macOS Calendar by exact title match (first matching event). "
+            "Pass match_title and any of new_title, start_at, end_at (ISO-8601), or description."
+        ),
+        func=_update,
+        args_schema=MacCalendarUpdateEventArgs,
+    )
+
+
+def make_mac_calendar_delete_tool() -> StructuredTool:
+    def _delete(title: str) -> str:
+        if not _mac_calendar_supported():
+            return json.dumps(
+                {"ok": False, "error": "Mac Calendar tools require macOS (Darwin)."},
+                ensure_ascii=False,
+            )
+        t = (title or "").strip()
+        if not t:
+            return json.dumps({"ok": False, "error": "title is required"}, ensure_ascii=False)
+        try:
+            _delete_mac_calendar_event(title=t)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        return json.dumps({"ok": True, "calendar": "mac", "title": t}, ensure_ascii=False)
+
+    return StructuredTool.from_function(
+        name="mac_calendar_delete_event",
+        description=(
+            "Delete an event from macOS Calendar by exact title match (first matching event). "
+            "Runs on the server Mac."
+        ),
+        func=_delete,
+        args_schema=MacCalendarDeleteEventArgs,
     )
