@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { SendHorizontal, Square } from 'lucide-vue-next'
+import { SendHorizontal, Square, Plus } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
+import { QUICK_PROMPTS } from '../constants/prompts'
 
 const props = defineProps<{
   disabled: boolean
@@ -22,6 +23,32 @@ const llmMode = ref<'auto' | 'gemini' | 'nvidia' | 'agent'>('auto')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const isComposingWithIME = ref(false)
 const llmModeStorageKey = 'chat_input_llm_mode'
+const showAgentModes = ref(false)
+const selectedAgentMode = ref<string | null>(null)
+
+const selectAgentMode = (index: number) => {
+  const prompt = QUICK_PROMPTS[index]
+  input.value = prompt.text
+  selectedAgentMode.value = prompt.label
+  showAgentModes.value = false
+  nextTick(() => {
+    adjustHeight()
+    textareaRef.value?.focus()
+  })
+}
+
+watch(input, (newVal) => {
+  if (!newVal.trim()) {
+    selectedAgentMode.value = null
+  }
+})
+
+const closeAgentModes = (e: MouseEvent) => {
+  const target = e.target as HTMLElement
+  if (!target.closest('.plus-menu-container')) {
+    showAgentModes.value = false
+  }
+}
 
 const adjustHeight = () => {
   if (!textareaRef.value) return
@@ -58,6 +85,7 @@ const terminate = () => {
 }
 
 onMounted(() => {
+  document.addEventListener('click', closeAgentModes)
   const savedLlmMode = localStorage.getItem(llmModeStorageKey)
   if (
     savedLlmMode === 'auto' ||
@@ -68,6 +96,10 @@ onMounted(() => {
     llmMode.value = savedLlmMode as typeof llmMode.value
   }
   textareaRef.value?.focus()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeAgentModes)
 })
 
 watch(llmMode, (value) => {
@@ -88,6 +120,29 @@ watch(
 
 <template>
   <div class="composer" :class="{ 'composer--disabled': disabled }">
+    <div class="plus-menu-container">
+      <button 
+        class="plus-btn" 
+        :class="{ 'has-mode': selectedAgentMode }"
+        @click.stop="showAgentModes = !showAgentModes" 
+        :disabled="disabled || loading" 
+        title="Agent Modes"
+      >
+        <Plus v-if="!selectedAgentMode" :size="16" />
+        <span v-else class="mode-label">{{ selectedAgentMode }}</span>
+      </button>
+      <div v-if="showAgentModes" class="agent-modes-dropdown">
+        <div
+          v-for="(prompt, index) in QUICK_PROMPTS"
+          :key="index"
+          class="agent-mode-item"
+          @click="selectAgentMode(index)"
+        >
+          {{ prompt.label }}
+        </div>
+      </div>
+    </div>
+
     <div class="llm-mode-row">
       <select v-model="llmMode" class="llm-select" :disabled="disabled || loading" aria-label="LLM mode">
         <option value="auto">Auto</option>
@@ -173,6 +228,85 @@ watch(
 
 .composer-input::placeholder {
   color: var(--text-dim);
+}
+
+.plus-menu-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.plus-btn {
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 32px;
+}
+
+.plus-btn:not(.has-mode) {
+  width: 32px;
+  padding: 0;
+}
+
+.plus-btn.has-mode {
+  padding: 0 10px;
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: rgba(var(--accent-rgb), 0.05);
+}
+
+.mode-label {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.plus-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.plus-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.agent-modes-dropdown {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-mode-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  white-space: nowrap;
+}
+
+.agent-mode-item:hover {
+  background: var(--surface-2);
 }
 
 .llm-mode-row {
