@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -398,6 +399,87 @@ class DelegateToSubAgentArgs(BaseModel):
         return self
 
 
+class DelegateParallelTaskArgs(BaseModel):
+    task_description: str = Field(
+        description="Task for one parallel sub agent."
+    )
+    context: str = Field(
+        default="",
+        description="Optional context for this sub agent.",
+    )
+    output_subdir: str = Field(
+        default="",
+        description="Optional task-specific output subdirectory under data_path.",
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "DelegateParallelTaskArgs":
+        self.task_description = (self.task_description or "").strip()
+        self.context = (self.context or "").strip()
+        self.output_subdir = (self.output_subdir or "").strip().strip("/")
+        if not self.task_description:
+            raise ValueError("task_description is required for each task.")
+        if self.output_subdir and any(part == ".." for part in Path(self.output_subdir).parts):
+            raise ValueError("output_subdir must not contain '..'.")
+        return self
+
+
+class DelegateToSubAgentsParallelArgs(BaseModel):
+    tasks: list[DelegateParallelTaskArgs] = Field(
+        description="Parallel sub agent tasks to execute and wait for all responses."
+    )
+    data_path: str = Field(
+        default="~/Developer/Agent/analysis_data",
+        description="Base path to store sub agent materials and outputs.",
+    )
+    max_depth: int = Field(
+        default=2,
+        description="Maximum nested sub-agent delegation depth (0-4).",
+    )
+    max_workers: int = Field(
+        default=3,
+        description="Maximum parallel sub agents to run concurrently (1-8).",
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "DelegateToSubAgentsParallelArgs":
+        self.data_path = (self.data_path or "~/Developer/Agent/analysis_data").strip()
+        if not isinstance(self.tasks, list) or not self.tasks:
+            raise ValueError("tasks is required and must include at least one task.")
+        self.max_depth = max(0, min(int(self.max_depth), 4))
+        self.max_workers = max(1, min(int(self.max_workers), 8))
+        if len(self.tasks) > 12:
+            raise ValueError("tasks supports up to 12 items per call.")
+        return self
+
+
+def _resolve_subagent_data_path(raw_data_path: str) -> tuple[Path | None, str | None]:
+    from src.agent.paths import project_root
+
+    root = project_root()
+    raw_path = Path(raw_data_path).expanduser()
+    resolved_path = (root / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
+    try:
+        resolved_path.relative_to(root.resolve())
+    except ValueError:
+        return None, f"Sub agent data_path must stay inside project root: {root}"
+    return resolved_path, None
+
+
+def _build_subagent_prompt(task_description: str, context: str, output_path: Path) -> str:
+    return (
+        "你是被委派的 Sub Agent。任務要求如下：\n"
+        "- 你可以在必要時繼續委派子 Agent，但不得超過系統深度限制。\n"
+        "- 目標是蒐集對問題有幫助的資料，不要加入無關內容。\n"
+        "- 優先用 execute_shell_command 在專案內搜尋（例如 rg、ls、python 腳本）。\n"
+        f"- 所有蒐集與中間結果請整理到路徑：{output_path}\n"
+        "- 若資料量大，請先整理重點後再分析。\n"
+        "- 最後輸出：1) 蒐集重點 2) 分析結論 3) 已寫入檔案路徑。\n\n"
+        f"委派任務：\n{task_description}\n\n"
+        f"補充脈絡：\n{context or '(none)'}\n"
+    )
+
+
 def make_subagent_tool() -> StructuredTool:
     def _delegate(
         task_description: str,
@@ -429,28 +511,16 @@ def make_subagent_tool() -> StructuredTool:
         try:
             from src.agent.builder import build_executor
             from src.agent.executor import invoke_executor
-            from src.agent.paths import project_root
-
-            root = project_root()
-            raw_path = Path(args.data_path).expanduser()
-            resolved_path = (root / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
-            try:
-                resolved_path.relative_to(root.resolve())
-            except ValueError:
-                return f"Sub agent data_path must stay inside project root: {root}"
+            resolved_path, path_error = _resolve_subagent_data_path(args.data_path)
+            if resolved_path is None:
+                return path_error or "Sub agent data_path is invalid."
             resolved_path.mkdir(parents=True, exist_ok=True)
 
             executor = build_executor()
-            subagent_prompt = (
-                "你是被委派的 Sub Agent。任務要求如下：\n"
-                "- 你可以在必要時繼續委派子 Agent，但不得超過系統深度限制。\n"
-                "- 目標是蒐集對問題有幫助的資料，不要加入無關內容。\n"
-                "- 優先用 execute_shell_command 在專案內搜尋（例如 rg、ls、python 腳本）。\n"
-                f"- 所有蒐集與中間結果請整理到路徑：{resolved_path}\n"
-                "- 若資料量大，請先整理重點後再分析。\n"
-                "- 最後輸出：1) 蒐集重點 2) 分析結論 3) 已寫入檔案路徑。\n\n"
-                f"委派任務：\n{args.task_description}\n\n"
-                f"補充脈絡：\n{args.context or '(none)'}\n"
+            subagent_prompt = _build_subagent_prompt(
+                args.task_description,
+                args.context,
+                resolved_path,
             )
             result = invoke_executor(
                 executor,
@@ -483,6 +553,119 @@ def make_subagent_tool() -> StructuredTool:
         func=_delegate,
         args_schema=DelegateToSubAgentArgs,
     )
+
+
+def make_parallel_subagent_tool() -> StructuredTool:
+    def _delegate_parallel(
+        tasks: list[dict[str, Any]],
+        data_path: str = "~/Developer/Agent/analysis_data",
+        max_depth: int = 2,
+        max_workers: int = 3,
+    ) -> str:
+        global _subagent_depth
+
+        try:
+            args = DelegateToSubAgentsParallelArgs(
+                tasks=tasks,
+                data_path=data_path,
+                max_depth=max_depth,
+                max_workers=max_workers,
+            )
+        except Exception as exc:
+            return f"Parallel sub agent args invalid: {exc}"
+
+        with _subagent_depth_lock:
+            current_depth = _subagent_depth
+            if current_depth >= args.max_depth:
+                return (
+                    "Parallel sub agent delegation skipped: max depth reached "
+                    f"({current_depth}/{args.max_depth})."
+                )
+            _subagent_depth += 1
+
+        try:
+            from src.agent.builder import build_executor
+            from src.agent.executor import invoke_executor
+
+            base_path, path_error = _resolve_subagent_data_path(args.data_path)
+            if base_path is None:
+                return path_error or "Sub agent data_path is invalid."
+            base_path.mkdir(parents=True, exist_ok=True)
+
+            task_count = len(args.tasks)
+            worker_count = min(args.max_workers, task_count)
+            results: list[dict[str, Any]] = [{} for _ in range(task_count)]
+
+            def _run_one(index: int, task: DelegateParallelTaskArgs) -> dict[str, Any]:
+                subdir = task.output_subdir or f"task_{index + 1:02d}"
+                out_path = (base_path / subdir).resolve()
+                out_path.relative_to(base_path.resolve())
+                out_path.mkdir(parents=True, exist_ok=True)
+                prompt = _build_subagent_prompt(task.task_description, task.context, out_path)
+                executor = build_executor()
+                result = invoke_executor(
+                    executor,
+                    {"input": prompt, "chat_history": []},
+                )
+                output = (result or {}).get("output")
+                return {
+                    "ok": True,
+                    "task_index": index,
+                    "task_description": task.task_description,
+                    "data_path": str(out_path),
+                    "result": output if isinstance(output, str) else str(output or ""),
+                }
+
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                future_map = {
+                    pool.submit(_run_one, idx, task): idx
+                    for idx, task in enumerate(args.tasks)
+                }
+                for fut in as_completed(future_map):
+                    idx = future_map[fut]
+                    task = args.tasks[idx]
+                    try:
+                        results[idx] = fut.result()
+                    except Exception as exc:
+                        results[idx] = {
+                            "ok": False,
+                            "task_index": idx,
+                            "task_description": task.task_description,
+                            "error": str(exc),
+                        }
+
+            ok_count = sum(1 for r in results if r.get("ok"))
+            fail_count = len(results) - ok_count
+            return json.dumps(
+                {
+                    "ok": fail_count == 0,
+                    "depth": current_depth + 1,
+                    "data_path": str(base_path),
+                    "parallel": True,
+                    "task_count": len(results),
+                    "ok_count": ok_count,
+                    "fail_count": fail_count,
+                    "results": results,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        finally:
+            with _subagent_depth_lock:
+                _subagent_depth = max(0, _subagent_depth - 1)
+
+    return StructuredTool.from_function(
+        name="delegate_to_subagents_parallel",
+        description=(
+            "Run multiple sub agents in parallel for independent data collection "
+            "tasks and wait until all finish. Returns aggregated results for all "
+            "tasks, including per-task output paths and errors."
+        ),
+        func=_delegate_parallel,
+        args_schema=DelegateToSubAgentsParallelArgs,
+    )
+
 
 class ShellCommandArgs(BaseModel):
     command: str = Field(description="Shell command to execute locally")
@@ -1575,6 +1758,50 @@ def make_mac_calendar_update_tool() -> StructuredTool:
         func=_update,
         args_schema=MacCalendarUpdateEventArgs,
     )
+
+_EXPORT_DIR = Path("~/Developer/Agent/analysis_data/export").expanduser()
+
+class ExportDocumentArgs(BaseModel):
+    filename: str = Field(description="Output filename including extension (e.g. report.md, data.json)")
+    content: str = Field(description="Document content to write")
+    subdir: str = Field(default="", description="Optional subdirectory under the export folder")
+
+def make_export_document_tool() -> StructuredTool:
+    def _export(filename: str, content: str, subdir: str = "") -> str:
+        fname = (filename or "").strip()
+        if not fname:
+            return json.dumps({"ok": False, "error": "filename is required"}, ensure_ascii=False)
+        if not content:
+            return json.dumps({"ok": False, "error": "content is empty"}, ensure_ascii=False)
+        if any(part in fname for part in ("..", "/", "\\")):
+            return json.dumps({"ok": False, "error": "filename must not contain path separators or .."}, ensure_ascii=False)
+        sub = (subdir or "").strip().strip("/")
+        if sub and any(part == ".." for part in Path(sub).parts):
+            return json.dumps({"ok": False, "error": "subdir must not escape export root"}, ensure_ascii=False)
+        target_dir = (_EXPORT_DIR / sub) if sub else _EXPORT_DIR
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            out_path = target_dir / fname
+            out_path.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": True, "path": str(out_path), "bytes": len(content.encode("utf-8"))},
+            ensure_ascii=False,
+        )
+
+    return StructuredTool.from_function(
+        name="export_document",
+        description=(
+            "Write organised analysis output or a document to "
+            "~/Developer/Agent/analysis_data/export. "
+            "Provide filename (with extension), the full content string, and an "
+            "optional subdir to group related files. Returns the absolute path on success."
+        ),
+        func=_export,
+        args_schema=ExportDocumentArgs,
+    )
+
 
 def make_mac_calendar_delete_tool(
     *,

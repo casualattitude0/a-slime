@@ -13,11 +13,13 @@ from src.tools import (
     make_calendar_delete_tool,
     make_calendar_tool,
     make_calendar_update_tool,
+    make_export_document_tool,
     make_local_datetime_tool,
     make_mac_calendar_create_tool,
     make_mac_calendar_delete_tool,
     make_mac_calendar_update_tool,
     make_memory_tools,
+    make_parallel_subagent_tool,
     make_reasoning_tool,
     make_shell_tool,
     make_subagent_tool,
@@ -73,6 +75,7 @@ def build_tool_list(
     memory_tools = make_memory_tools(chroma_path, embeddings, collection_name=memory_collection)
     reasoning_tool = make_reasoning_tool()
     subagent_tool = make_subagent_tool()
+    parallel_subagent_tool = make_parallel_subagent_tool()
     calendar_create_tool = make_calendar_tool(
         chroma_dir=Path(chroma_path),
         embeddings=embeddings,
@@ -99,6 +102,7 @@ def build_tool_list(
         embeddings=embeddings,
         memory_collection=memory_collection,
     )
+    export_document_tool = make_export_document_tool()
 
     tools: list[Any] = [
         *memory_tools,
@@ -108,6 +112,7 @@ def build_tool_list(
         shell_tool,
         reasoning_tool,
         subagent_tool,
+        parallel_subagent_tool,
         retriever_tool,
         calendar_create_tool,
         calendar_update_tool,
@@ -115,6 +120,7 @@ def build_tool_list(
         mac_calendar_create_tool,
         mac_calendar_update_tool,
         mac_calendar_delete_tool,
+        export_document_tool,
     ]
     save_memory_tool = next(
         (t for t in memory_tools if getattr(t, "name", "") == "save_to_memory"),

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
@@ -764,13 +764,14 @@ async def _resolve_session(
             )
 
         history_for_prompt = list(hist)
+        effective_input = msg
         if system_instruction:
-            history_for_prompt = history_for_prompt + [SystemMessage(content=system_instruction)]
+            effective_input = f"{system_instruction.strip()}\n\n{msg}"
         executor = _get_executor_for_llm_mode(
             app, version.version_id, msg, len(hist), llm_mode
         )
         payload = {
-            "input": msg,
+            "input": effective_input,
             "chat_history": history_for_prompt,
             "version_id": version.version_id,
             "llm_model_label": _executor_model_label(app, executor, version.model_profile),
