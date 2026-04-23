@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, AlertTriangle, Wrench, Zap, Brain } from 'lucide-vue-next'
+import { User, AlertTriangle, Wrench, Zap, Brain, Copy, Check } from 'lucide-vue-next'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 import type { LLMErrorPayload } from '../stores/chatStore'
 
@@ -27,6 +27,14 @@ const emit = defineEmits<{
   (e: 'answer-immediately'): void
   (e: 'feedback', rating: number): void
 }>()
+
+const copied = ref(false)
+
+async function copyText() {
+  await navigator.clipboard.writeText(props.text)
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 1800)
+}
 
 const md = new MarkdownIt({
   linkify: true,
@@ -83,6 +91,13 @@ const roleLabel = computed(() => {
       >
         <span v-if="streaming">{{ text }}</span>
         <span v-else v-html="renderedText"></span>
+        <div v-if="!streaming && text" class="copy-action">
+          <button class="copy-btn" :class="{ 'copy-btn--done': copied }" :title="copied ? 'Copied' : 'Copy'" @click="copyText">
+            <Check v-if="copied" :size="12" />
+            <Copy v-else :size="12" />
+            <span>{{ copied ? 'Copied' : 'Copy' }}</span>
+          </button>
+        </div>
         <div v-if="!streaming && messageRef" class="feedback-actions">
           <template v-if="feedbackStatus === 'submitted'">
             <span class="feedback-state">Feedback saved ({{ feedbackRating === 5 ? 'Helpful' : 'Not helpful' }})</span>
@@ -301,6 +316,36 @@ const roleLabel = computed(() => {
   overflow-wrap: break-word;
   max-height: 45vh;
   overflow-y: auto;
+}
+
+.copy-action {
+  display: flex;
+  margin-top: 10px;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.copy-btn:hover {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.34);
+}
+
+.copy-btn--done {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.34);
 }
 
 .feedback-actions {
