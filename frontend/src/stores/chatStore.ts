@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import aiSlimeAvatarBlue from '../assets/ai_slime_avatar_blue.png'
+import aiSlimeAvatarGreen from '../assets/ai_slime_avatar_green.png'
+import aiSlimeAvatarRed from '../assets/ai_slime_avatar_red.png'
+import aiSlimeAvatarYellow from '../assets/ai_slime_avatar_yellow.png'
+import aiSlimeAvatarRedPurple from '../assets/ai_slime_avatar_red_purple.png'
 
 export interface LLMErrorPayload {
   is_llm_error: boolean
@@ -49,6 +54,21 @@ export interface ChatEntry {
 }
 
 export type LLMMode = 'auto' | 'gemini' | 'nvidia' | 'agent'
+export type ToolSlimeColor = 'blue' | 'green' | 'red_purple' | 'yellow' | 'red'
+
+export interface ToolStatusCard {
+  toolName: string
+  statusLabel: string
+  dialogueText: string
+  logLines: string[]
+  avatarSrc: string
+  color: ToolSlimeColor
+  updatedAt: number
+}
+
+export interface ToolStatusRecord extends ToolStatusCard {
+  finishedAt: number
+}
 
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<Message[]>([])
@@ -72,6 +92,9 @@ export const useChatStore = defineStore('chat', () => {
   const ragLoading = ref<boolean>(false)
   const activeController = ref<AbortController | null>(null)
   const pendingReminderChatId = ref<string | null>(null)
+  const activeToolCards = ref<ToolStatusCard[]>([])
+  const toolCardHistory = ref<ToolStatusRecord[]>([])
+  const currentToolName = ref<string | null>(null)
   let _reminderPollTimer: number | null = null
 
   const chats = ref<ChatEntry[]>([])
@@ -91,6 +114,99 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       localStorage.removeItem('agent_session_id')
     }
+  }
+
+  function _toolToSlimeColor(toolName: string): ToolSlimeColor {
+    const byExact: Record<string, ToolSlimeColor> = {
+      document_search: 'blue',
+      web_search: 'blue',
+      web_fetch: 'blue',
+      search_memory: 'blue',
+      save_to_memory: 'green',
+      export_document: 'green',
+      execute_shell_command: 'red_purple',
+      ask_reasoning_model: 'red_purple',
+      delegate_to_subagent: 'red_purple',
+      delegate_to_subagents_parallel: 'red_purple',
+      get_local_datetime: 'yellow',
+    }
+    if (byExact[toolName]) return byExact[toolName]!
+    if (toolName.startsWith('calendar_')) return 'yellow'
+    return 'red'
+  }
+
+  function _toolColorToAvatar(color: ToolSlimeColor): string {
+    if (color === 'blue') return aiSlimeAvatarBlue
+    if (color === 'green') return aiSlimeAvatarGreen
+    if (color === 'red_purple') return aiSlimeAvatarRedPurple
+    if (color === 'yellow') return aiSlimeAvatarYellow
+    return aiSlimeAvatarRed
+  }
+
+  function _upsertToolCard(toolNameRaw: string, statusLabelRaw: string) {
+    const toolName = String(toolNameRaw || '').trim() || 'unknown_tool'
+    const statusLabel = String(statusLabelRaw || '').trim() || '執行工具'
+    const color = _toolToSlimeColor(toolName)
+    const avatarSrc = _toolColorToAvatar(color)
+    const prev = activeToolCards.value.find((x) => x.toolName === toolName)
+    const prevLines = prev?.logLines ?? []
+    const nextLines = [...prevLines]
+    if (statusLabel && nextLines[nextLines.length - 1] !== statusLabel) {
+      nextLines.push(statusLabel)
+    }
+    const trimmedLines = nextLines.slice(-6)
+    const nextCard: ToolStatusCard = {
+      toolName,
+      statusLabel,
+      dialogueText: trimmedLines.join('\n'),
+      logLines: trimmedLines,
+      avatarSrc,
+      color,
+      updatedAt: Date.now(),
+    }
+    const idx = activeToolCards.value.findIndex((x) => x.toolName === toolName)
+    if (idx >= 0) {
+      activeToolCards.value[idx] = nextCard
+    } else {
+      activeToolCards.value.push(nextCard)
+    }
+  }
+
+  function _appendToolDialogueForCurrentTool(labelRaw: string) {
+    const toolName = currentToolName.value
+    if (!toolName) return
+    const label = String(labelRaw || '').trim()
+    if (!label) return
+    _upsertToolCard(toolName, label)
+  }
+
+  function _archiveAndClearToolCards() {
+    if (!activeToolCards.value.length) return
+    const finishedAt = Date.now()
+    const archived = activeToolCards.value.map((card) => ({
+      ...card,
+      finishedAt,
+    }))
+    toolCardHistory.value = [...toolCardHistory.value, ...archived].slice(-300)
+    activeToolCards.value = []
+  }
+
+  function _archiveCurrentToolCard() {
+    const toolName = currentToolName.value
+    if (!toolName) return
+    const idx = activeToolCards.value.findIndex((x) => x.toolName === toolName)
+    if (idx < 0) {
+      currentToolName.value = null
+      return
+    }
+    const card = activeToolCards.value[idx]!
+    const archived: ToolStatusRecord = {
+      ...card,
+      finishedAt: Date.now(),
+    }
+    toolCardHistory.value = [...toolCardHistory.value, archived].slice(-300)
+    activeToolCards.value.splice(idx, 1)
+    currentToolName.value = null
   }
 
   /** Map a backend phase string to a user-facing display label. Falls back to the raw label. */
@@ -117,6 +233,20 @@ export const useChatStore = defineStore('chat', () => {
 
     if (obj.event === 'status' && obj.label) {
       status.value = _phaseToDisplay(String(obj.phase ?? ''), String(obj.label))
+      if (obj.phase === 'tool_running') {
+        const toolName = String(obj.tool ?? '').trim() || 'unknown_tool'
+        currentToolName.value = toolName
+        _upsertToolCard(toolName, String(obj.label))
+      } else if (obj.phase === 'tool_result_processing') {
+        _appendToolDialogueForCurrentTool(String(obj.label))
+        _archiveCurrentToolCard()
+      } else if (
+        obj.phase === 'thinking'
+        || obj.phase === 'llm_requesting_model'
+        || obj.phase === 'tool_planning'
+      ) {
+        _appendToolDialogueForCurrentTool(String(obj.label))
+      }
     }
 
     if (obj.event === 'delta' && obj.text) {
@@ -132,6 +262,8 @@ export const useChatStore = defineStore('chat', () => {
     if (obj.event === 'done') {
       if (obj.session_id) setSessionId(obj.session_id)
       status.value = ''
+      _archiveAndClearToolCards()
+      currentToolName.value = null
 
       if (obj.terminated) {
         if (streamingBotIndex.value >= 0) {
@@ -188,6 +320,8 @@ export const useChatStore = defineStore('chat', () => {
 
     if (obj.event === 'error') {
       status.value = ''
+      _archiveAndClearToolCards()
+      currentToolName.value = null
       if (streamingBotIndex.value >= 0) {
         messages.value.splice(streamingBotIndex.value, 1)
         streamingBotIndex.value = -1
@@ -247,9 +381,13 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e: any) {
       if (e?.name === 'AbortError') {
         status.value = ''
+        _archiveAndClearToolCards()
+        currentToolName.value = null
         return
       }
       status.value = ''
+      _archiveAndClearToolCards()
+      currentToolName.value = null
       if (streamingBotIndex.value >= 0) {
         messages.value.splice(streamingBotIndex.value, 1)
       }
@@ -282,6 +420,8 @@ export const useChatStore = defineStore('chat', () => {
 
       ws.onerror = () => {
         status.value = ''
+        _archiveAndClearToolCards()
+        currentToolName.value = null
         if (streamingBotIndex.value >= 0) {
           messages.value.splice(streamingBotIndex.value, 1)
         }
@@ -307,6 +447,8 @@ export const useChatStore = defineStore('chat', () => {
     pendingLLMError.value = null
     streamingBotIndex.value = -1
     streamingReply.value = ''
+    _archiveAndClearToolCards()
+    currentToolName.value = null
 
     try {
       if (transport.value === 'ws' && typeof WebSocket !== 'undefined') {
@@ -321,6 +463,8 @@ export const useChatStore = defineStore('chat', () => {
       streamingBotIndex.value = -1
       streamingReply.value = ''
       status.value = ''
+      _archiveAndClearToolCards()
+      currentToolName.value = null
       isLoading.value = false
       if (pendingReminderChatId.value) {
         const chatId = pendingReminderChatId.value
@@ -358,6 +502,8 @@ export const useChatStore = defineStore('chat', () => {
   async function terminateMessage() {
     if (!isLoading.value) return
     status.value = ''
+    _archiveAndClearToolCards()
+    currentToolName.value = null
     const sid = sessionId.value
     activeController.value?.abort()
     activeController.value = null
@@ -387,6 +533,9 @@ export const useChatStore = defineStore('chat', () => {
     const sid = sessionId.value
     isLoading.value = true
     status.value = ''
+    _archiveAndClearToolCards()
+    toolCardHistory.value = []
+    currentToolName.value = null
     try {
       await fetch('/api/clear', {
         method: 'POST',
@@ -438,6 +587,8 @@ export const useChatStore = defineStore('chat', () => {
     pendingLLMError.value = null
     isLoading.value = true
     status.value = ''
+    _archiveAndClearToolCards()
+    currentToolName.value = null
     try {
       const res = await fetch('/api/chat/fallback', {
         method: 'POST',
@@ -466,6 +617,8 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       isLoading.value = false
       status.value = ''
+      _archiveAndClearToolCards()
+      currentToolName.value = null
     }
   }
 
@@ -818,6 +971,8 @@ export const useChatStore = defineStore('chat', () => {
     ragLoading,
     chats,
     activeChatId,
+    activeToolCards,
+    toolCardHistory,
     sendMessage,
     terminateMessage,
     clearHistory,

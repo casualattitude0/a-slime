@@ -25,6 +25,7 @@ const {
   streamingBotIndex,
   transport,
   persistedTurnTick,
+  activeToolCards,
 } = storeToRefs(chatStore)
 
 const {
@@ -249,6 +250,19 @@ useHeroToChatBubbleFly({
       <main ref="logRef" class="chat-canvas">
         <div class="center-stage">
           <div class="center-stage-inner">
+            <div v-if="activeToolCards.length" class="subtask-slime-strip subtask-slime-strip--top" aria-label="Active tools">
+              <div
+                v-for="card in activeToolCards"
+                :key="card.toolName"
+                class="subtask-slime-card"
+              >
+                <div class="subtask-slime-dialogue">{{ card.dialogueText || card.statusLabel }}</div>
+                <div class="subtask-slime-activity">
+                  <span class="subtask-slime-activity-dot dot-active"></span>
+                </div>
+                <img :src="card.avatarSrc" :alt="card.toolName" class="subtask-slime-avatar" />
+              </div>
+            </div>
             <div class="center-stage-hero-cluster">
             <div class="center-stage-block center-stage-block--agent">
             <div
@@ -575,7 +589,7 @@ useHeroToChatBubbleFly({
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: stretch;
   min-height: 0;
 }
@@ -894,6 +908,114 @@ useHeroToChatBubbleFly({
   align-self: center;
   width: 100%;
   max-width: min(560px, 100%);
+}
+
+.subtask-slime-strip {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 2px 2px 10px;
+  margin-bottom: 4px;
+  scroll-snap-type: x proximity;
+}
+
+.subtask-slime-strip--top {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.subtask-slime-card {
+  flex: 0 0 184px;
+  min-width: 184px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border-bright);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+  padding: 8px 8px 6px;
+  scroll-snap-align: start;
+}
+
+.subtask-slime-avatar {
+  width: auto;
+  height: auto;
+  max-width: 56px;
+  max-height: 56px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.subtask-slime-dialogue {
+  width: 100%;
+  min-height: 58px;
+  max-height: 92px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text);
+  background: rgba(var(--secondary-rgb), 0.13);
+  border: 1px solid rgba(var(--secondary-rgb), 0.34);
+  border-radius: 12px;
+  padding: 6px 9px;
+  white-space: normal;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+}
+
+.subtask-slime-activity {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 6px 0;
+}
+
+.subtask-slime-activity-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(var(--accent-rgb), 0.52);
+  flex-shrink: 0;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+
+.subtask-slime-activity-dot.dot-active {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+.subtask-slime-strip::-webkit-scrollbar {
+  height: 6px;
+}
+
+.subtask-slime-strip::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.subtask-slime-strip::-webkit-scrollbar-thumb {
+  background: rgba(var(--accent-rgb), 0.28);
+  border-radius: 999px;
+}
+
+.subtask-slime-strip::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--accent-rgb), 0.44);
+}
+
+.subtask-slime-dialogue::-webkit-scrollbar {
+  width: 6px;
+}
+
+.subtask-slime-dialogue::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.subtask-slime-dialogue::-webkit-scrollbar-thumb {
+  background: rgba(var(--accent-rgb), 0.24);
+  border-radius: 999px;
 }
 
 .hero-activity {
