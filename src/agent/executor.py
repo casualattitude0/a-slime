@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 from collections.abc import AsyncIterator
 from typing import Any, Callable
 
 from langchain_classic.agents import AgentExecutor
 
 from src.agent.callbacks import (
+    get_invocation_status_sink,
     llm_vendor_label,
     set_invocation_status_sink,
     status_callbacks,
@@ -113,9 +115,40 @@ async def astream_executor(
     seen_thinking = False
     seen_first_text_delta = False
     streamed_text_so_far = ""
+    status_queue: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
+    previous_sink = get_invocation_status_sink()
+
+    def _stream_status_sink(ev: dict[str, Any]) -> None:
+        try:
+            status_queue.put_nowait(dict(ev))
+        except Exception:
+            return
+
+    def _drain_status_events() -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        while True:
+            try:
+                queued = status_queue.get_nowait()
+            except queue.Empty:
+                break
+            phase = str((queued or {}).get("phase") or "").strip()
+            label = str((queued or {}).get("label") or "").strip()
+            if not phase or not label:
+                continue
+            ev = {"event": "status", "phase": phase, "label": label}
+            tool_name = str((queued or {}).get("tool") or "").strip()
+            if tool_name:
+                ev["tool"] = tool_name
+            out.append(ev)
+        return out
+
+    set_invocation_status_sink(_stream_status_sink)
 
     try:
         async for ev in inner_exec.astream_events(run_payload, version="v2"):
+            for queued_ev in _drain_status_events():
+                yield queued_ev
+
             if cancel_check is not None and cancel_check():
                 yield {"event": "_cancelled"}
                 return
@@ -174,10 +207,16 @@ async def astream_executor(
                         yield {"event": "status", "phase": "llm_streaming", "label": "模型回覆中"}
                     yield {"event": "delta", "text": delta_text}
 
+        for queued_ev in _drain_status_events():
+            yield queued_ev
         yield {"event": "_done", "output": final_output}
 
     except Exception as exc:
+        for queued_ev in _drain_status_events():
+            yield queued_ev
         yield {"event": "_error", "exc": exc}
+    finally:
+        set_invocation_status_sink(previous_sink)
 
 
 __all__ = [

@@ -233,8 +233,12 @@ export const useChatStore = defineStore('chat', () => {
 
     if (obj.event === 'status' && obj.label) {
       status.value = _phaseToDisplay(String(obj.phase ?? ''), String(obj.label))
+      const statusToolName = String(obj.tool ?? '').trim()
+      if (statusToolName) {
+        currentToolName.value = statusToolName
+      }
       if (obj.phase === 'tool_running') {
-        const toolName = String(obj.tool ?? '').trim() || 'unknown_tool'
+        const toolName = statusToolName || 'unknown_tool'
         currentToolName.value = toolName
         _upsertToolCard(toolName, String(obj.label))
       } else if (obj.phase === 'tool_result_processing') {
@@ -245,6 +249,8 @@ export const useChatStore = defineStore('chat', () => {
         || obj.phase === 'llm_requesting_model'
         || obj.phase === 'tool_planning'
       ) {
+        _appendToolDialogueForCurrentTool(String(obj.label))
+      } else if (statusToolName.includes('delegate_to_subagent')) {
         _appendToolDialogueForCurrentTool(String(obj.label))
       }
     }

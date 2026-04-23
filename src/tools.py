@@ -22,6 +22,8 @@ from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field, model_validator
 
+from src.agent.callbacks import get_invocation_status_sink
+
 _MEMORY_COLLECTION = "agent_memory"
 _ReminderSink = Callable[[dict[str, Any]], None]
 _reminder_sink_lock = Lock()
@@ -480,6 +482,27 @@ def _build_subagent_prompt(task_description: str, context: str, output_path: Pat
     )
 
 
+def _make_subagent_status_forwarder(
+    tool_name: str,
+    parent_sink: Callable[[dict[str, Any]], None] | None,
+) -> Callable[[dict[str, Any]], None] | None:
+    if parent_sink is None:
+        return None
+
+    def _forward(ev: dict[str, Any]) -> None:
+        phase = str((ev or {}).get("phase") or "").strip()
+        label = str((ev or {}).get("label") or "").strip()
+        if not phase or not label:
+            return
+        forward_label = f"Sub-agent：{label}"
+        try:
+            parent_sink({"phase": phase, "label": forward_label, "tool": tool_name})
+        except Exception:
+            return
+
+    return _forward
+
+
 def make_subagent_tool() -> StructuredTool:
     def _delegate(
         task_description: str,
@@ -522,9 +545,14 @@ def make_subagent_tool() -> StructuredTool:
                 args.context,
                 resolved_path,
             )
+            parent_sink = get_invocation_status_sink()
+            sub_status_sink = _make_subagent_status_forwarder(
+                "delegate_to_subagent", parent_sink
+            )
             result = invoke_executor(
                 executor,
                 {"input": subagent_prompt, "chat_history": []},
+                status_sink=sub_status_sink,
             )
             output = (result or {}).get("output")
             return json.dumps(
@@ -595,6 +623,7 @@ def make_parallel_subagent_tool() -> StructuredTool:
             task_count = len(args.tasks)
             worker_count = min(args.max_workers, task_count)
             results: list[dict[str, Any]] = [{} for _ in range(task_count)]
+            parent_sink = get_invocation_status_sink()
 
             def _run_one(index: int, task: DelegateParallelTaskArgs) -> dict[str, Any]:
                 subdir = task.output_subdir or f"task_{index + 1:02d}"
@@ -603,9 +632,13 @@ def make_parallel_subagent_tool() -> StructuredTool:
                 out_path.mkdir(parents=True, exist_ok=True)
                 prompt = _build_subagent_prompt(task.task_description, task.context, out_path)
                 executor = build_executor()
+                sub_status_sink = _make_subagent_status_forwarder(
+                    "delegate_to_subagents_parallel", parent_sink
+                )
                 result = invoke_executor(
                     executor,
                     {"input": prompt, "chat_history": []},
+                    status_sink=sub_status_sink,
                 )
                 output = (result or {}).get("output")
                 return {

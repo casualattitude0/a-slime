@@ -961,7 +961,7 @@ useHeroToChatBubbleFly({
   border: 1px solid rgba(var(--secondary-rgb), 0.34);
   border-radius: 12px;
   padding: 6px 9px;
-  white-space: normal;
+  white-space: pre-line;
   word-break: break-word;
   font-family: ui-monospace, monospace;
 }
