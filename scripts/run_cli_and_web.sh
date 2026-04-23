@@ -74,18 +74,12 @@ if [[ -d "$DATA_DIR" ]]; then
     if [[ -z "${GOOGLE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
       warn "Skipping ingest because GOOGLE_API_KEY / GEMINI_API_KEY is not set."
     else
-      TMP_CHROMA_DIR="$(mktemp -d "$ROOT/.chroma_ingest_tmp.XXXXXX")"
       info "Building ChromaDB via src/ingest.py …"
-      if "$PYTHON" "$ROOT/src/ingest.py" --data-dir "$DATA_DIR" --chroma-dir "$TMP_CHROMA_DIR"; then
-        if [[ -d "$CHROMA_DIR" ]]; then
-          rm -rf "$CHROMA_DIR"
-        fi
-        mv "$TMP_CHROMA_DIR" "$CHROMA_DIR"
+      if "$PYTHON" "$ROOT/src/ingest.py" --data-dir "$DATA_DIR" --chroma-dir "$CHROMA_DIR"; then
         touch "$INGEST_STAMP"
         ok "Ingest complete → $CHROMA_DIR"
       else
         warn "Ingest failed; keeping existing ChromaDB unchanged."
-        rm -rf "$TMP_CHROMA_DIR"
       fi
     fi
   else
