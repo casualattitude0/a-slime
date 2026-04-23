@@ -71,9 +71,21 @@ def build_tool_list(
     shell_tool = make_shell_tool()
     memory_tools = make_memory_tools(chroma_path, embeddings, collection_name=memory_collection)
     reasoning_tool = make_reasoning_tool()
-    calendar_create_tool = make_calendar_tool()
-    calendar_update_tool = make_calendar_update_tool()
-    calendar_delete_tool = make_calendar_delete_tool()
+    calendar_create_tool = make_calendar_tool(
+        chroma_dir=Path(chroma_path),
+        embeddings=embeddings,
+        memory_collection=memory_collection,
+    )
+    calendar_update_tool = make_calendar_update_tool(
+        chroma_dir=Path(chroma_path),
+        embeddings=embeddings,
+        memory_collection=memory_collection,
+    )
+    calendar_delete_tool = make_calendar_delete_tool(
+        chroma_dir=Path(chroma_path),
+        embeddings=embeddings,
+        memory_collection=memory_collection,
+    )
     mac_calendar_create_tool = make_mac_calendar_create_tool(
         chroma_dir=Path(chroma_path),
         embeddings=embeddings,

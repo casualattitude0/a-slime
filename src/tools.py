@@ -199,10 +199,10 @@ def _delete_memory_entries_for_calendar_event(
     chroma_dir: Path,
     embeddings: GoogleGenerativeAIEmbeddings,
     collection_name: str,
-    apple_calendar_id: str,
+    calendar_id: str,
 ) -> int:
-    """Remove memory entries that reference apple_calendar_id. Returns count deleted."""
-    if not apple_calendar_id:
+    """Remove memory entries that reference a calendar event id. Returns count deleted."""
+    if not calendar_id:
         return 0
     try:
         store = _memory_store_for(chroma_dir, embeddings, collection_name)
@@ -211,7 +211,7 @@ def _delete_memory_entries_for_calendar_event(
         docs = result.get("documents") or []
         to_delete = [
             mid for mid, doc in zip(ids, docs)
-            if apple_calendar_id in (doc or "")
+            if calendar_id in (doc or "")
         ]
         if to_delete:
             store._collection.delete(ids=to_delete)
@@ -775,7 +775,12 @@ def _delete_google_calendar_event(*, event_id: str) -> None:
         resp = client.delete(url, headers=headers)
         _raise_for_calendar_status(resp, "Google Calendar delete event")
 
-def make_calendar_tool() -> StructuredTool:
+def make_calendar_tool(
+    *,
+    chroma_dir: Path | None = None,
+    embeddings: GoogleGenerativeAIEmbeddings | None = None,
+    memory_collection: str | None = None,
+) -> StructuredTool:
     def _create_event(
         title: str,
         start_at: str = "",
@@ -891,6 +896,21 @@ def make_calendar_tool() -> StructuredTool:
                 "source_session_id": sid,
             }
         )
+        memory_item_id: str | None = None
+        if chroma_dir is not None and embeddings is not None and (memory_collection or "").strip():
+            mem_line = (
+                "Google Calendar event created | "
+                f"google_calendar_id={gid} | title={json.dumps(t, ensure_ascii=False)} | "
+                f"start_at={start_dt.isoformat()} | end_at={end_dt.isoformat()}"
+            )
+            memory_item_id = _persist_memory_line(
+                chroma_dir,
+                embeddings,
+                memory_collection.strip(),
+                mem_line,
+                "google-calendar,calendar",
+            )
+
         result = {
             "ok": True,
             "google_success": google_success,
@@ -904,6 +924,8 @@ def make_calendar_tool() -> StructuredTool:
                 "apple": apple_result.get("url", ""),
             },
             "warnings": warning_messages,
+            "saved_to_memory": memory_item_id is not None,
+            "memory_item_id": memory_item_id or "",
         }
         return json.dumps(result, ensure_ascii=False)
 
@@ -919,7 +941,12 @@ def make_calendar_tool() -> StructuredTool:
         args_schema=CalendarCreateEventArgs,
     )
 
-def make_calendar_update_tool() -> StructuredTool:
+def make_calendar_update_tool(
+    *,
+    chroma_dir: Path | None = None,
+    embeddings: GoogleGenerativeAIEmbeddings | None = None,
+    memory_collection: str | None = None,
+) -> StructuredTool:
     def _update_event(
         event_id: str,
         title: str = "",
@@ -948,11 +975,39 @@ def make_calendar_update_tool() -> StructuredTool:
             )
         except Exception as exc:
             return json.dumps({"ok": False, "error": f"google calendar update failed: {str(exc)}"}, ensure_ascii=False)
+
+        memory_entries_removed = 0
+        memory_item_id: str | None = None
+        if chroma_dir is not None and embeddings is not None and (memory_collection or "").strip():
+            collection = memory_collection.strip()
+            memory_entries_removed = _delete_memory_entries_for_calendar_event(
+                chroma_dir,
+                embeddings,
+                collection,
+                (event_id or "").strip(),
+            )
+            resolved_event_id = str(result.get("id") or "").strip() or (event_id or "").strip()
+            mem_line = (
+                "Google Calendar event updated | "
+                f"google_calendar_id={resolved_event_id} | title={json.dumps((title or '').strip(), ensure_ascii=False)} | "
+                f"start_at={(start_dt.isoformat() if start_dt else '')} | end_at={(end_dt.isoformat() if end_dt else '')}"
+            )
+            memory_item_id = _persist_memory_line(
+                chroma_dir,
+                embeddings,
+                collection,
+                mem_line,
+                "google-calendar,calendar",
+            )
+
         return json.dumps(
             {
                 "ok": True,
                 "event_id": result.get("id", ""),
                 "event_link": result.get("html_link", ""),
+                "memory_entries_removed": memory_entries_removed,
+                "saved_to_memory": memory_item_id is not None,
+                "memory_item_id": memory_item_id or "",
             },
             ensure_ascii=False,
         )
@@ -964,13 +1019,35 @@ def make_calendar_update_tool() -> StructuredTool:
         args_schema=CalendarUpdateEventArgs,
     )
 
-def make_calendar_delete_tool() -> StructuredTool:
+def make_calendar_delete_tool(
+    *,
+    chroma_dir: Path | None = None,
+    embeddings: GoogleGenerativeAIEmbeddings | None = None,
+    memory_collection: str | None = None,
+) -> StructuredTool:
     def _delete_event(event_id: str) -> str:
+        event_id_clean = (event_id or "").strip()
         try:
-            _delete_google_calendar_event(event_id=event_id)
+            _delete_google_calendar_event(event_id=event_id_clean)
         except Exception as exc:
             return json.dumps({"ok": False, "error": f"google calendar delete failed: {str(exc)}"}, ensure_ascii=False)
-        return json.dumps({"ok": True, "event_id": (event_id or "").strip()}, ensure_ascii=False)
+
+        memory_entries_removed = 0
+        if chroma_dir is not None and embeddings is not None and (memory_collection or "").strip():
+            memory_entries_removed = _delete_memory_entries_for_calendar_event(
+                chroma_dir,
+                embeddings,
+                memory_collection.strip(),
+                event_id_clean,
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "event_id": event_id_clean,
+                "memory_entries_removed": memory_entries_removed,
+            },
+            ensure_ascii=False,
+        )
 
     return StructuredTool.from_function(
         name="calendar_delete_event",

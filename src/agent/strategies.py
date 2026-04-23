@@ -32,6 +32,9 @@ def build_agent_runnable(
             + "- If the user asks to add or change Google Calendar events, you MUST run the matching "
             "calendar tool (calendar_create_event / calendar_update_event / calendar_delete_event) "
             "and use the Observation before saying the event was created or updated.\n"
+            "- If the user explicitly asks for Google only, DO NOT call any mac_calendar_* tools.\n"
+            "- If the user explicitly asks for Apple only, DO NOT call any calendar_* Google tools.\n"
+            "- Call both Google and Apple calendar tools only when the user explicitly asks for both.\n"
             "- Never claim a calendar action succeeded without a successful Observation from that tool.\n"
             '- Never say Google Calendar created an event unless Observation JSON has "ok": true '
             "and a non-empty event_ids.google.\n"
