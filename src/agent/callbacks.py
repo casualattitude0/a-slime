@@ -28,18 +28,15 @@ def _redact_text(text: str) -> str:
     return out
 
 
-def _single_line(text: str, limit: int = 140) -> str:
-    s = " ".join((text or "").split())
-    if len(s) > limit:
-        return s[: limit - 1] + "…"
-    return s
+def _status_text(text: str) -> str:
+    return str(text or "").strip()
 
 
 def _tool_input_snippet(name: str, input_str: str) -> str:
     raw = (input_str or "").strip()
     if not raw:
         return ""
-    safe = _single_line(_redact_text(raw), 180)
+    safe = _status_text(_redact_text(raw))
     if name == "execute_shell_command":
         return f"命令：{safe}"
     if name == "web_fetch":
@@ -52,7 +49,7 @@ def _tool_input_snippet(name: str, input_str: str) -> str:
 
 
 def _tool_output_snippet(output: Any) -> str:
-    text = _single_line(_redact_text(str(output or "")), 180)
+    text = _status_text(_redact_text(str(output or "")))
     return text
 
 

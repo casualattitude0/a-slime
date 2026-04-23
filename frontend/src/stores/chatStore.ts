@@ -4,7 +4,7 @@ import aiSlimeAvatarBlue from '../assets/ai_slime_avatar_blue.png'
 import aiSlimeAvatarGreen from '../assets/ai_slime_avatar_green.png'
 import aiSlimeAvatarRed from '../assets/ai_slime_avatar_red.png'
 import aiSlimeAvatarYellow from '../assets/ai_slime_avatar_yellow.png'
-import aiSlimeAvatarRedPurple from '../assets/ai_slime_avatar_red_purple.png'
+import aiSlimeAvatarRedPurple from '../assets/ai_slime_avatar_purple.png'
 
 export interface LLMErrorPayload {
   is_llm_error: boolean
@@ -68,6 +68,27 @@ export interface ToolStatusCard {
 
 export interface ToolStatusRecord extends ToolStatusCard {
   finishedAt: number
+}
+
+const TOOL_DIALOGUE_CHAR_BUDGET = 16000
+
+function _trimLogLinesByCharBudget(lines: string[], budget: number): string[] {
+  const safeBudget = Math.max(200, budget)
+  const out: string[] = []
+  let used = 0
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = String(lines[i] ?? '')
+    const withSep = line.length + (out.length ? 1 : 0)
+    if (out.length > 0 && used + withSep > safeBudget) break
+    if (out.length === 0 && withSep > safeBudget) {
+      const keep = line.slice(Math.max(0, line.length - safeBudget))
+      out.unshift(keep)
+      break
+    }
+    out.unshift(line)
+    used += withSep
+  }
+  return out
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -154,7 +175,7 @@ export const useChatStore = defineStore('chat', () => {
     if (statusLabel && nextLines[nextLines.length - 1] !== statusLabel) {
       nextLines.push(statusLabel)
     }
-    const trimmedLines = nextLines.slice(-6)
+    const trimmedLines = _trimLogLinesByCharBudget(nextLines, TOOL_DIALOGUE_CHAR_BUDGET)
     const nextCard: ToolStatusCard = {
       toolName,
       statusLabel,

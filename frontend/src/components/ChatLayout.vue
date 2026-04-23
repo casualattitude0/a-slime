@@ -26,6 +26,7 @@ const {
   transport,
   persistedTurnTick,
   activeToolCards,
+  toolCardHistory,
 } = storeToRefs(chatStore)
 
 const {
@@ -78,6 +79,8 @@ const showEmptyAgentBubble = computed(() => {
   return activeMessages.value.some((m) => m.role === 'user')
 })
 
+const completedToolCards = computed(() => [...toolCardHistory.value].reverse())
+
 const toggleTransport = () => {
   transport.value = transport.value === 'ws' ? 'sse' : 'ws'
 }
@@ -87,6 +90,7 @@ const heroAvatarRef = ref<HTMLImageElement | null>(null)
 const showPanel = ref(false)
 const sidebarOpen = ref(localStorage.getItem('agent_sidebar_open') !== '0')
 const historyRailOpen = ref(localStorage.getItem('agent_history_rail_open') !== '0')
+const toolHistoryOpen = ref(localStorage.getItem('agent_tool_history_open') !== '0')
 const heroThinkingText = computed(() => streamingReply.value || status.value || 'AI 思考中')
 
 function toggleSidebar() {
@@ -97,6 +101,11 @@ function toggleSidebar() {
 function toggleHistoryRail() {
   historyRailOpen.value = !historyRailOpen.value
   localStorage.setItem('agent_history_rail_open', historyRailOpen.value ? '1' : '0')
+}
+
+function toggleToolHistory() {
+  toolHistoryOpen.value = !toolHistoryOpen.value
+  localStorage.setItem('agent_tool_history_open', toolHistoryOpen.value ? '1' : '0')
 }
 
 const scrollHistoryRailToBottom = async () => {
@@ -263,6 +272,25 @@ useHeroToChatBubbleFly({
                 <img :src="card.avatarSrc" :alt="card.toolName" class="subtask-slime-avatar" />
               </div>
             </div>
+            <section v-if="completedToolCards.length" class="subtask-slime-history" aria-label="Completed tools">
+              <button class="subtask-slime-history-toggle" type="button" @click="toggleToolHistory">
+                <span>Completed Tools ({{ completedToolCards.length }})</span>
+                <span class="subtask-slime-history-toggle-icon" :class="{ 'subtask-slime-history-toggle-icon--closed': !toolHistoryOpen }">></span>
+              </button>
+              <div v-show="toolHistoryOpen" class="subtask-slime-strip subtask-slime-strip--history">
+                <div
+                  v-for="(card, idx) in completedToolCards"
+                  :key="`h-${card.toolName}-${card.finishedAt}-${idx}`"
+                  class="subtask-slime-card subtask-slime-card--history"
+                >
+                  <div class="subtask-slime-dialogue">{{ card.dialogueText || card.statusLabel }}</div>
+                  <div class="subtask-slime-activity">
+                    <span class="subtask-slime-activity-dot"></span>
+                  </div>
+                  <img :src="card.avatarSrc" :alt="card.toolName" class="subtask-slime-avatar" />
+                </div>
+              </div>
+            </section>
             <div class="center-stage-hero-cluster">
             <div class="center-stage-block center-stage-block--agent">
             <div
@@ -952,7 +980,7 @@ useHeroToChatBubbleFly({
 .subtask-slime-dialogue {
   width: 100%;
   min-height: 58px;
-  max-height: 92px;
+  max-height: 220px;
   overflow-y: auto;
   font-size: 11px;
   line-height: 1.3;
@@ -964,6 +992,47 @@ useHeroToChatBubbleFly({
   white-space: pre-line;
   word-break: break-word;
   font-family: ui-monospace, monospace;
+}
+
+.subtask-slime-history {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.subtask-slime-history-toggle {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  background: rgba(var(--accent-rgb), 0.1);
+  color: rgba(207, 227, 255, 0.96);
+  font-size: 11px;
+  border-radius: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+}
+
+.subtask-slime-history-toggle-icon {
+  display: inline-block;
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.subtask-slime-history-toggle-icon--closed {
+  transform: rotate(0deg);
+}
+
+.subtask-slime-strip--history {
+  justify-content: flex-start;
+}
+
+.subtask-slime-card--history {
+  opacity: 0.9;
 }
 
 .subtask-slime-activity {
