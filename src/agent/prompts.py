@@ -12,7 +12,7 @@ from src.agent.interfaces import is_nvidia_llm
 
 
 def _character_data_path(root: Path) -> Path:
-    return root / "character_data.json"
+    return root / "data" / "characters" / "character_data.json"
 
 
 def load_character_data(root: Path) -> dict[str, Any]:
