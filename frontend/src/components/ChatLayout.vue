@@ -1083,7 +1083,12 @@ useHeroToChatBubbleFly({
 }
 
 .subtask-slime-card--history {
-  opacity: 0.9;
+  justify-content: flex-end;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 .subtask-slime-activity {
