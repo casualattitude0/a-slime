@@ -9,5 +9,8 @@ data/telemetry/user_feedback.jsonl
 data/telemetry/agent_events.jsonl
 chat_registry.json
 google_oauth_token.json
+client_secret.json
+client_secret_at2.json
+*client_secret*.json
 wackyboats_client_secret_954373303085-5ijkv699s1b2qs9hfkag5vhaqc5dqnsi.apps.googleusercontent.com.json
 analysis_data
