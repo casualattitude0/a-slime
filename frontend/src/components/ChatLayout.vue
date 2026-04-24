@@ -10,7 +10,7 @@ import ConversationSidebar from './ConversationSidebar.vue'
 import aiSlimeAvatar from '../assets/ai_slime_avatar.png'
 import { useHeroToChatBubbleFly } from '../composables/useHeroToChatBubbleFly'
 import { useChatMessageSplit } from '../composables/useChatMessageSplit'
-import type { Message } from '../stores/chatStore'
+import type { Message, ToolStatusCard } from '../stores/chatStore'
 import { formatModelProfileLabel } from '../utils/modelProfile'
 
 const chatStore = useChatStore()
@@ -80,6 +80,19 @@ const showEmptyAgentBubble = computed(() => {
 })
 
 const completedToolCards = computed(() => [...toolCardHistory.value].reverse())
+
+function toolDialogueLines(card: ToolStatusCard): string[] {
+  if (Array.isArray(card.logLines) && card.logLines.length > 0) return card.logLines
+  const fallback = String(card.dialogueText || card.statusLabel || '').trim()
+  return fallback ? [fallback] : []
+}
+
+function toolDialogueLineClass(idx: number, total: number): string {
+  const distanceFromLatest = Math.max(0, total - idx - 1)
+  if (distanceFromLatest === 0) return 'subtask-slime-dialogue-line--fresh'
+  if (distanceFromLatest === 1) return 'subtask-slime-dialogue-line--recent'
+  return 'subtask-slime-dialogue-line--stale'
+}
 
 const toggleTransport = () => {
   transport.value = transport.value === 'ws' ? 'sse' : 'ws'
@@ -265,7 +278,16 @@ useHeroToChatBubbleFly({
                 :key="card.toolName"
                 class="subtask-slime-card"
               >
-                <div class="subtask-slime-dialogue">{{ card.dialogueText || card.statusLabel }}</div>
+                <div class="subtask-slime-dialogue">
+                  <div
+                    v-for="(line, idx) in toolDialogueLines(card)"
+                    :key="`active-${card.toolName}-${idx}`"
+                    class="subtask-slime-dialogue-line"
+                    :class="toolDialogueLineClass(idx, toolDialogueLines(card).length)"
+                  >
+                    {{ line }}
+                  </div>
+                </div>
                 <div class="subtask-slime-activity">
                   <span class="subtask-slime-activity-dot dot-active"></span>
                 </div>
@@ -283,7 +305,16 @@ useHeroToChatBubbleFly({
                   :key="`h-${card.toolName}-${card.finishedAt}-${idx}`"
                   class="subtask-slime-card subtask-slime-card--history"
                 >
-                  <div class="subtask-slime-dialogue">{{ card.dialogueText || card.statusLabel }}</div>
+                  <div class="subtask-slime-dialogue">
+                    <div
+                      v-for="(line, lineIdx) in toolDialogueLines(card)"
+                      :key="`history-${card.toolName}-${idx}-${lineIdx}`"
+                      class="subtask-slime-dialogue-line"
+                      :class="toolDialogueLineClass(lineIdx, toolDialogueLines(card).length)"
+                    >
+                      {{ line }}
+                    </div>
+                  </div>
                   <div class="subtask-slime-activity">
                     <span class="subtask-slime-activity-dot"></span>
                   </div>
@@ -992,6 +1023,26 @@ useHeroToChatBubbleFly({
   white-space: pre-line;
   word-break: break-word;
   font-family: ui-monospace, monospace;
+}
+
+.subtask-slime-dialogue-line {
+  opacity: 0.58;
+}
+
+.subtask-slime-dialogue-line + .subtask-slime-dialogue-line {
+  margin-top: 2px;
+}
+
+.subtask-slime-dialogue-line--stale {
+  opacity: 0.52;
+}
+
+.subtask-slime-dialogue-line--recent {
+  opacity: 0.78;
+}
+
+.subtask-slime-dialogue-line--fresh {
+  opacity: 1;
 }
 
 .subtask-slime-history {

@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 from langchain_community.vectorstores import Chroma
 from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.agent.callbacks import get_invocation_status_sink
 
@@ -539,7 +539,7 @@ def make_subagent_tool() -> StructuredTool:
                 return path_error or "Sub agent data_path is invalid."
             resolved_path.mkdir(parents=True, exist_ok=True)
 
-            executor = build_executor()
+            executor = build_executor(prefer_native_tool_agent=True)
             subagent_prompt = _build_subagent_prompt(
                 args.task_description,
                 args.context,
@@ -631,7 +631,7 @@ def make_parallel_subagent_tool() -> StructuredTool:
                 out_path.relative_to(base_path.resolve())
                 out_path.mkdir(parents=True, exist_ok=True)
                 prompt = _build_subagent_prompt(task.task_description, task.context, out_path)
-                executor = build_executor()
+                executor = build_executor(prefer_native_tool_agent=True)
                 sub_status_sink = _make_subagent_status_forwarder(
                     "delegate_to_subagents_parallel", parent_sink
                 )
@@ -703,6 +703,25 @@ def make_parallel_subagent_tool() -> StructuredTool:
 class ShellCommandArgs(BaseModel):
     command: str = Field(description="Shell command to execute locally")
 
+    @field_validator("command", mode="before")
+    @classmethod
+    def _coerce_shell_command(cls, v: Any) -> str:
+        if isinstance(v, dict):
+            inner = v.get("command")
+            return str(inner).strip() if inner is not None else ""
+        s = str(v).strip() if v is not None else ""
+        if s.startswith("{") and "command" in s:
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, dict):
+                    inner = parsed.get("command")
+                    if isinstance(inner, str) and inner.strip():
+                        return inner.strip()
+            except json.JSONDecodeError:
+                pass
+        return s
+
+
 def _run_shell_command(command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
@@ -713,13 +732,16 @@ def _run_shell_command(command: str) -> str:
     except ValueError as exc:
         return f"Invalid shell command: {exc}"
     try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        run_kw: dict[str, Any] = {
+            "shell": True,
+            "capture_output": True,
+            "text": True,
+            "timeout": 10,
+            "stdin": subprocess.DEVNULL,
+        }
+        if os.name != "nt":
+            run_kw["start_new_session"] = True
+        result = subprocess.run(cmd, **run_kw)
     except subprocess.TimeoutExpired:
         return "Shell command timed out after 10 seconds."
     except Exception as exc:

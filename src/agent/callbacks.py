@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import re
 from typing import Any, Callable
@@ -19,6 +20,7 @@ _REDACT_PATTERNS = [
     re.compile(r"(password\s*[=:]\s*)([^\s,;]+)", re.IGNORECASE),
     re.compile(r"(bearer\s+)([^\s,;]+)", re.IGNORECASE),
 ]
+_TOOL_INPUT_MAX_CHARS = 1200
 
 
 def _redact_text(text: str) -> str:
@@ -46,6 +48,27 @@ def _tool_input_snippet(name: str, input_str: str) -> str:
     if name in ("delegate_to_subagent", "delegate_to_subagents_parallel"):
         return f"任務：{safe}"
     return safe
+
+
+def _tool_input_to_text(tool_input: Any) -> str:
+    if tool_input is None:
+        return ""
+    if isinstance(tool_input, str):
+        text = tool_input
+    elif isinstance(tool_input, (dict, list, tuple)):
+        try:
+            text = json.dumps(tool_input, ensure_ascii=False)
+        except Exception:
+            text = str(tool_input)
+    else:
+        text = str(tool_input)
+    return text[:_TOOL_INPUT_MAX_CHARS]
+
+
+def format_tool_start_status(tool_name: str, tool_input: Any) -> str:
+    _, label = tool_name_to_status(tool_name)
+    detail = _tool_input_snippet(tool_name, _tool_input_to_text(tool_input))
+    return f"{label}｜{detail}" if detail else label
 
 
 def _tool_output_snippet(output: Any) -> str:
@@ -143,9 +166,8 @@ class AgentStatusCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         name = str((serialized or {}).get("name") or "")
-        phase, label = tool_name_to_status(name)
-        detail = _tool_input_snippet(name, input_str)
-        emit_status(phase, f"{label}｜{detail}" if detail else label)
+        phase, _label = tool_name_to_status(name)
+        emit_status(phase, format_tool_start_status(name, input_str))
 
     def on_tool_end(
         self,
@@ -192,6 +214,7 @@ def status_callbacks() -> list[AgentStatusCallbackHandler]:
 __all__ = [
     "AgentStatusCallbackHandler",
     "emit_status",
+    "format_tool_start_status",
     "get_invocation_status_sink",
     "llm_vendor_label",
     "set_invocation_status_sink",

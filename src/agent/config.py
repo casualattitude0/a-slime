@@ -32,6 +32,20 @@ def nvidia_agent_max_iterations() -> int:
     return max(1, min(n, 15))
 
 
+def standard_agent_max_iterations() -> int:
+    """Gemini / Ollama AgentExecutor loop cap (AGENT_MAX_ITERATIONS, default 30, max 100)."""
+    raw = (
+        os.environ.get("AGENT_MAX_ITERATIONS")
+        or os.environ.get("AGENT_GEMINI_MAX_ITERATIONS")
+        or "30"
+    ).strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 30
+    return max(1, min(n, 100))
+
+
 def nvidia_react_history_tail_limit() -> int | None:
     raw = (os.environ.get("AGENT_NVIDIA_REACT_HISTORY_MSGS") or "16").strip().lower()
     if raw in ("", "all", "full", "unlimited", "0"):
@@ -50,5 +64,6 @@ __all__ = [
     "prefetch_vague_gate_enabled",
     "rag_prefetch_mode",
     "nvidia_agent_max_iterations",
+    "standard_agent_max_iterations",
     "nvidia_react_history_tail_limit",
 ]

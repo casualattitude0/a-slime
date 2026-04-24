@@ -16,6 +16,7 @@ from src.agent.callbacks import emit_status
 from src.agent.config import (
     _DEFAULT_RAG_COLLECTION,
     nvidia_agent_max_iterations,
+    standard_agent_max_iterations,
 )
 from src.agent.interfaces import is_nvidia_llm, profile_for_chat_model
 from src.agent.llm_factory import default_chat_model_from_env
@@ -34,6 +35,7 @@ def build_executor(
     retriever_k: int = 4,
     memory_collection: str | None = None,
     rag_collection: str = _DEFAULT_RAG_COLLECTION,
+    prefer_native_tool_agent: bool = False,
 ) -> AgentExecutor | PrefetchExecutor:
     from src.ingest import ingest as run_ingest
 
@@ -83,6 +85,9 @@ def build_executor(
 
     chat_model = llm or default_chat_model_from_env()
     profile = profile_for_chat_model(chat_model)
+    use_react = profile.use_react
+    if prefer_native_tool_agent and profile.is_nvidia and use_react:
+        use_react = False
     system_message = build_chat_system_message(root, chat_model)
 
     mem_col = memory_collection or "agent_memory"
@@ -99,11 +104,15 @@ def build_executor(
         chat_model,
         tools,
         system_message=system_message,
-        use_react=profile.use_react,
+        use_react=use_react,
     )
 
     verbose = os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
-    exec_max_iter = nvidia_agent_max_iterations() if profile.is_nvidia else 10
+    exec_max_iter = (
+        nvidia_agent_max_iterations()
+        if profile.is_nvidia
+        else standard_agent_max_iterations()
+    )
     executor = AgentExecutor(
         agent=agent,
         tools=tools,

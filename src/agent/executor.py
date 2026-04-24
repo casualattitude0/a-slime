@@ -10,6 +10,7 @@ from typing import Any, Callable
 from langchain_classic.agents import AgentExecutor
 
 from src.agent.callbacks import (
+    format_tool_start_status,
     get_invocation_status_sink,
     llm_vendor_label,
     set_invocation_status_sink,
@@ -126,6 +127,7 @@ async def astream_executor(
 
     def _drain_status_events() -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+        extra_keys = ("detail", "content_hint")
         while True:
             try:
                 queued = status_queue.get_nowait()
@@ -139,6 +141,15 @@ async def astream_executor(
             tool_name = str((queued or {}).get("tool") or "").strip()
             if tool_name:
                 ev["tool"] = tool_name
+            for key in extra_keys:
+                value = (queued or {}).get(key)
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    value = value.strip()
+                    if not value:
+                        continue
+                ev[key] = value
             out.append(ev)
         return out
 
@@ -185,8 +196,10 @@ async def astream_executor(
 
             elif ev_name == "on_tool_start":
                 tool_name = ev.get("name") or ""
-                phase, label = tool_name_to_status(tool_name)
-                yield {"event": "status", "phase": phase, "label": label, "tool": tool_name}
+                phase, _label = tool_name_to_status(tool_name)
+                raw_input = (ev.get("data") or {}).get("input")
+                formatted_label = format_tool_start_status(tool_name, raw_input)
+                yield {"event": "status", "phase": phase, "label": formatted_label, "tool": tool_name}
 
             elif ev_name == "on_tool_end":
                 yield {"event": "status", "phase": "tool_result_processing", "label": "整合工具結果"}

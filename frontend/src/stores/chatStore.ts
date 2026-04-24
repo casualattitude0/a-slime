@@ -71,6 +71,7 @@ export interface ToolStatusRecord extends ToolStatusCard {
 }
 
 const TOOL_DIALOGUE_CHAR_BUDGET = 16000
+const TOOL_HISTORY_STORAGE_KEY = 'agent_tool_history_by_chat'
 
 function _trimLogLinesByCharBudget(lines: string[], budget: number): string[] {
   const safeBudget = Math.max(200, budget)
@@ -116,10 +117,48 @@ export const useChatStore = defineStore('chat', () => {
   const activeToolCards = ref<ToolStatusCard[]>([])
   const toolCardHistory = ref<ToolStatusRecord[]>([])
   const currentToolName = ref<string | null>(null)
+  const toolHistoryByChat = ref<Record<string, ToolStatusRecord[]>>({})
   let _reminderPollTimer: number | null = null
 
   const chats = ref<ChatEntry[]>([])
   const activeChatId = ref<string | null>(localStorage.getItem('agent_active_chat_id'))
+
+  try {
+    const raw = localStorage.getItem(TOOL_HISTORY_STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        const next: Record<string, ToolStatusRecord[]> = {}
+        Object.entries(parsed as Record<string, any>).forEach(([chatId, records]) => {
+          if (!chatId || !Array.isArray(records)) return
+          const normalized = records
+            .map((r) => {
+              if (!r || typeof r !== 'object') return null
+              const toolName = String((r as any).toolName ?? '').trim()
+              if (!toolName) return null
+              const statusLabel = String((r as any).statusLabel ?? '').trim() || '執行工具'
+              const logLinesRaw = Array.isArray((r as any).logLines) ? (r as any).logLines : [String((r as any).dialogueText ?? '')]
+              const logLines = _trimLogLinesByCharBudget(logLinesRaw.map((x: any) => String(x ?? '')), TOOL_DIALOGUE_CHAR_BUDGET)
+              const color = _toolToSlimeColor(toolName)
+              return {
+                toolName,
+                statusLabel,
+                dialogueText: logLines.join('\n'),
+                logLines,
+                avatarSrc: _toolColorToAvatar(color),
+                color,
+                updatedAt: Number((r as any).updatedAt ?? Date.now()) || Date.now(),
+                finishedAt: Number((r as any).finishedAt ?? Date.now()) || Date.now(),
+              } as ToolStatusRecord
+            })
+            .filter((r): r is ToolStatusRecord => r != null)
+            .slice(-300)
+          next[chatId] = normalized
+        })
+        toolHistoryByChat.value = next
+      }
+    }
+  } catch {}
 
   // Legacy streaming marker kept for compatibility with message components.
   const streamingBotIndex = ref<number>(-1)
@@ -201,6 +240,35 @@ export const useChatStore = defineStore('chat', () => {
     _upsertToolCard(toolName, label)
   }
 
+  function _persistToolHistoryByChat() {
+    try {
+      localStorage.setItem(TOOL_HISTORY_STORAGE_KEY, JSON.stringify(toolHistoryByChat.value))
+    } catch {}
+  }
+
+  function _activeToolHistoryChatId(): string | null {
+    const id = String(activeChatId.value || sessionId.value || '').trim()
+    return id || null
+  }
+
+  function _setToolHistoryForChat(chatId: string, records: ToolStatusRecord[]) {
+    const normalized = records.slice(-300)
+    if (normalized.length > 0) {
+      toolHistoryByChat.value[chatId] = normalized
+    } else {
+      delete toolHistoryByChat.value[chatId]
+    }
+    _persistToolHistoryByChat()
+  }
+
+  function _hydrateToolHistoryForChat(chatId: string | null) {
+    if (!chatId) {
+      toolCardHistory.value = []
+      return
+    }
+    toolCardHistory.value = [...(toolHistoryByChat.value[chatId] ?? [])]
+  }
+
   function _archiveAndClearToolCards() {
     if (!activeToolCards.value.length) return
     const finishedAt = Date.now()
@@ -208,7 +276,14 @@ export const useChatStore = defineStore('chat', () => {
       ...card,
       finishedAt,
     }))
-    toolCardHistory.value = [...toolCardHistory.value, ...archived].slice(-300)
+    const chatId = _activeToolHistoryChatId()
+    if (chatId) {
+      const merged = [...(toolHistoryByChat.value[chatId] ?? []), ...archived].slice(-300)
+      _setToolHistoryForChat(chatId, merged)
+      toolCardHistory.value = [...merged]
+    } else {
+      toolCardHistory.value = [...toolCardHistory.value, ...archived].slice(-300)
+    }
     activeToolCards.value = []
   }
 
@@ -225,7 +300,14 @@ export const useChatStore = defineStore('chat', () => {
       ...card,
       finishedAt: Date.now(),
     }
-    toolCardHistory.value = [...toolCardHistory.value, archived].slice(-300)
+    const chatId = _activeToolHistoryChatId()
+    if (chatId) {
+      const merged = [...(toolHistoryByChat.value[chatId] ?? []), archived].slice(-300)
+      _setToolHistoryForChat(chatId, merged)
+      toolCardHistory.value = [...merged]
+    } else {
+      toolCardHistory.value = [...toolCardHistory.value, archived].slice(-300)
+    }
     activeToolCards.value.splice(idx, 1)
     currentToolName.value = null
   }
@@ -249,7 +331,12 @@ export const useChatStore = defineStore('chat', () => {
   /** Handle one parsed event frame from either SSE or WebSocket transport. */
   function _handleStreamEvent(obj: any, originalText: string): { done: boolean } {
     if (obj.event === 'start') {
-      if (obj.session_id) setSessionId(obj.session_id)
+      if (obj.session_id) {
+        const sid = String(obj.session_id)
+        setSessionId(sid)
+        _setActiveChatId(sid)
+        _hydrateToolHistoryForChat(sid)
+      }
     }
 
     if (obj.event === 'status' && obj.label) {
@@ -287,7 +374,12 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     if (obj.event === 'done') {
-      if (obj.session_id) setSessionId(obj.session_id)
+      if (obj.session_id) {
+        const sid = String(obj.session_id)
+        setSessionId(sid)
+        _setActiveChatId(sid)
+        _hydrateToolHistoryForChat(sid)
+      }
       status.value = ''
       _archiveAndClearToolCards()
       currentToolName.value = null
@@ -476,6 +568,7 @@ export const useChatStore = defineStore('chat', () => {
     streamingReply.value = ''
     _archiveAndClearToolCards()
     currentToolName.value = null
+    _hydrateToolHistoryForChat(_activeToolHistoryChatId())
 
     try {
       if (transport.value === 'ws' && typeof WebSocket !== 'undefined') {
@@ -561,6 +654,10 @@ export const useChatStore = defineStore('chat', () => {
     isLoading.value = true
     status.value = ''
     _archiveAndClearToolCards()
+    const activeId = _activeToolHistoryChatId()
+    if (activeId) {
+      _setToolHistoryForChat(activeId, [])
+    }
     toolCardHistory.value = []
     currentToolName.value = null
     try {
@@ -807,6 +904,7 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       localStorage.removeItem('agent_active_chat_id')
     }
+    _hydrateToolHistoryForChat(id)
   }
 
   function _applyChatTitleLocally(chatId: string, title: string) {
@@ -846,6 +944,9 @@ export const useChatStore = defineStore('chat', () => {
     pendingLLMError.value = null
     streamingBotIndex.value = -1
     streamingReply.value = ''
+    activeToolCards.value = []
+    toolCardHistory.value = []
+    currentToolName.value = null
 
     try {
       const url = activeVersionId.value
@@ -876,6 +977,8 @@ export const useChatStore = defineStore('chat', () => {
         text: m.text,
       }))
       messages.value = loaded
+      activeToolCards.value = []
+      currentToolName.value = null
       setSessionId(chatId)
       _setActiveChatId(chatId)
       return true
@@ -904,6 +1007,10 @@ export const useChatStore = defineStore('chat', () => {
       const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
       if (!res.ok) return false
       chats.value = chats.value.filter((c) => c.chat_id !== chatId)
+      if (toolHistoryByChat.value[chatId]) {
+        delete toolHistoryByChat.value[chatId]
+        _persistToolHistoryByChat()
+      }
       if (activeChatId.value === chatId) {
         // Switch to most recent remaining chat, or clear
         const next = chats.value[0]
@@ -935,6 +1042,10 @@ export const useChatStore = defineStore('chat', () => {
       memoryItems.value = []
       ragItems.value = []
       chats.value = []
+      activeToolCards.value = []
+      toolCardHistory.value = []
+      toolHistoryByChat.value = {}
+      _persistToolHistoryByChat()
       setSessionId(null)
       _setActiveChatId(null)
       await fetchVersions()
